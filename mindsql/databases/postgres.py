@@ -1,5 +1,4 @@
 from typing import List
-from urllib.parse import urlparse
 
 import pandas as pd
 import psycopg2
@@ -29,10 +28,8 @@ class Postgres(IDatabase):
             - psycopg2.OperationalError: If an error occurs while connecting to the PostgreSQL database
         """
         try:
-            parsed_url = urlparse(url)
-            connection = psycopg2.connect(user=parsed_url.username, password=parsed_url.password,
-                                          host=parsed_url.hostname, port=parsed_url.port,
-                                          database=parsed_url.path.lstrip('/'))
+            print("Connecting to database...")
+            connection = psycopg2.connect(url)
             
             # Detect and store the current schema
             cur = connection.cursor()
