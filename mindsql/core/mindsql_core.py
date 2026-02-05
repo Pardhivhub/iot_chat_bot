@@ -861,6 +861,16 @@ class MindSQLCore:
                                 if scores[real_table] < scores[table]: # Only boost if lower
                                     scores[real_table] += 4
 
+        # Log all table scores for debugging
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        log.info("=" * 60)
+        log.info("TABLE SELECTION SCORES")
+        log.info("=" * 60)
+        for table, score in sorted_scores:
+            if score > 0:
+                log.info(f"  {table:<40} Score: {score:>3}")
+        log.info("=" * 60)
+
         return scores
 
 
@@ -965,7 +975,15 @@ class MindSQLCore:
                         if real_table.lower() == p:
                             final_selection.add(real_table)
 
-        return list(final_selection)
+        # Log final selection with scores
+        final_list = list(final_selection)
+        log.info("FINAL TABLE SELECTION:")
+        for table in final_list:
+            score = scored_tables.get(table, 0)
+            log.info(f"  ✓ {table:<40} (Score: {score})")
+        log.info(f"Total tables selected: {len(final_list)}")
+        
+        return final_list
 
     def __get_real_metadata(self, connection) -> dict:
         """
