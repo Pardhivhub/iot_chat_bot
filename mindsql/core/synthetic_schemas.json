@@ -1,0 +1,66 @@
+{
+    "gmiiot_plants": {
+        "columns": {
+            "plant_id": {
+                "type": "integer"
+            },
+            "plant_name": {
+                "type": "varchar"
+            }
+        },
+        "metadata": {
+            "row_count": 5
+        }
+    },
+    "gmiiot_lines": {
+        "columns": {
+            "id": {
+                "type": "integer"
+            },
+            "line_name": {
+                "type": "varchar"
+            },
+            "plant_id": {
+                "type": "integer"
+            }
+        },
+        "metadata": {
+            "row_count": 20
+        }
+    },
+    "line_machines": {
+        "columns": {
+            "id": {
+                "type": "integer"
+            },
+            "loop_id": {
+                "type": "integer"
+            },
+            "loop_name": {
+                "type": "varchar"
+            }
+        },
+        "metadata": {
+            "row_count": 50
+        }
+    },
+    "machines": {
+        "columns": {
+            "id": {
+                "type": "integer"
+            },
+            "machine_name": {
+                "type": "varchar"
+            },
+            "loop_id": {
+                "type": "integer"
+            },
+            "location_id": {
+                "type": "varchar"
+            }
+        },
+        "metadata": {
+            "row_count": 120
+        }
+    }
+}
