@@ -33,6 +33,14 @@ class Postgres(IDatabase):
             connection = psycopg2.connect(user=parsed_url.username, password=parsed_url.password,
                                           host=parsed_url.hostname, port=parsed_url.port,
                                           database=parsed_url.path.lstrip('/'))
+            
+            # Detect and store the current schema
+            cur = connection.cursor()
+            cur.execute("SELECT current_schema();")
+            self.current_schema = cur.fetchone()[0]
+            cur.close()
+            log.info(f"Active schema: {self.current_schema}")
+            
             return connection
         except psycopg2.OperationalError as e:
             log.error(ERROR_CONNECTING_TO_DB_CONSTANT.format("PostgreSQL", e))
@@ -113,7 +121,11 @@ class Postgres(IDatabase):
             DataFrame: A pandas DataFrame containing the table names from the information schema.
         """
         self.validate_connection(connection)
-        query = POSTGRESQL_DB_TABLES_INFO_SCHEMA_QUERY.format(db=database)
+        
+        # Get current schema if not already detected
+        schema = getattr(self, 'current_schema', 'public')
+        
+        query = POSTGRESQL_DB_TABLES_INFO_SCHEMA_QUERY.format(schema=schema, db=database)
         df_tables = self.execute_sql(connection, query)
         return df_tables
 
@@ -173,23 +185,25 @@ class Postgres(IDatabase):
         """
         self.validate_connection(connection)
         
-        # Get column information
-        # FIX: Parameterized query to prevent SQL injection
+        # Get current schema if not already detected
+        schema = getattr(self, 'current_schema', 'public')
+        
+        # Get column information using parameterized query
         column_query = """
         SELECT column_name, data_type 
         FROM information_schema.columns 
-        WHERE table_name = %s AND table_schema = 'public'
+        WHERE table_name = %s AND table_schema = %s
         ORDER BY ordinal_position;
         """
-        df_columns = self.execute_sql(connection, column_query, (table_name,))
+        df_columns = self.execute_sql(connection, column_query, (table_name, schema))
         
-        # FIX: Parameterized query to prevent SQL injection
-        count_query = """
+        # Get row count using parameterized query with proper schema qualification
+        count_query = f"""
         SELECT n_live_tup as row_count 
         FROM pg_stat_user_tables 
-        WHERE relname = %s;
+        WHERE relname = %s AND schemaname = %s;
         """
-        df_count = self.execute_sql(connection, count_query, (table_name,))
+        df_count = self.execute_sql(connection, count_query, (table_name, schema))
         
         columns = {}
         if df_columns is not None and not df_columns.empty:
@@ -215,6 +229,10 @@ class Postgres(IDatabase):
         Returns columns: [table_name, column_name, foreign_table_name, foreign_column_name]
         """
         self.validate_connection(connection)
+        
+        # Get current schema if not already detected
+        schema = getattr(self, 'current_schema', 'public')
+        
         query = """
         SELECT
             tc.table_name, 
@@ -231,6 +249,6 @@ class Postgres(IDatabase):
               AND ccu.table_schema = tc.table_schema
         WHERE tc.constraint_type = 'FOREIGN KEY' 
           AND LOWER(tc.table_catalog) = LOWER(%s)
-          AND tc.table_schema = 'public';
+          AND tc.table_schema = %s;
         """
-        return self.execute_sql(connection, query, (database,))
+        return self.execute_sql(connection, query, (database, schema))

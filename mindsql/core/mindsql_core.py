@@ -1019,7 +1019,9 @@ class MindSQLCore:
                         # Get actual row count
                         row_count = 0
                         try:
-                            count_query = f"SELECT COUNT(*) as cnt FROM {table};"
+                            # Schema-qualify the table name
+                            schema = getattr(self.database, 'current_schema', 'public')
+                            count_query = f'SELECT COUNT(*) as cnt FROM "{schema}"."{table}";'
                             df_count = self.database.execute_sql(connection, count_query)
                             if df_count is not None and not df_count.empty:
                                 row_count = int(df_count['cnt'].iloc[0])
@@ -1448,6 +1450,8 @@ class MindSQLCore:
         try:
             log.info("Indexing sample values for value mapping...")
             all_tables = ddls["Table"].tolist()
+            schema = getattr(self.database, 'current_schema', 'public')
+            
             for table in all_tables:
                 # Find columns that look like names, codes, or keys
                 try:
@@ -1455,13 +1459,14 @@ class MindSQLCore:
                         SELECT column_name 
                         FROM information_schema.columns 
                         WHERE table_name = '{table.lower()}' 
+                        AND table_schema = '{schema}'
                         AND (column_name LIKE '%name%' OR column_name LIKE '%code%' OR column_name LIKE '%id%' OR column_name LIKE '%status%')
                         LIMIT 10;
                     """
                     col_df = self.database.execute_sql(connection, column_query)
                     if col_df is not None and not col_df.empty:
                         for col in col_df['column_name']:
-                            sample_query = f"SELECT DISTINCT \"{col}\" FROM \"{table}\" WHERE \"{col}\" IS NOT NULL LIMIT 20;"
+                            sample_query = f'SELECT DISTINCT "{col}" FROM "{schema}"."{table}" WHERE "{col}" IS NOT NULL LIMIT 20;'
                             samples = self.database.execute_sql(connection, sample_query)
                             if samples is not None and not samples.empty:
                                 vals = ", ".join([str(v) for v in samples[col].tolist() if v])
