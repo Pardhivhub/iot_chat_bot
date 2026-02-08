@@ -30,6 +30,7 @@ class Postgres(IDatabase):
         try:
             print("Connecting to database...")
             connection = psycopg2.connect(url)
+            connection.autocommit = True  # Ensure read-only queries don't hang in transactions
             
             # Detect and store the current schema
             cur = connection.cursor()

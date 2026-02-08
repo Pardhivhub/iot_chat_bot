@@ -222,18 +222,13 @@ class Faiss(IVectorstore):
                 if table_name in query_lower:
                     exact_matches.append(ddl)
                 else:
-                    # Check if any part of the table name is in the query (handle singular/plural)
-                    # e.g., 'golden_settings' matches if 'golden_setting' or 'setting' is in query
-                    for part in table_name.split('_'):
-                        if len(part) > 3 and part in query_lower:
+                    # Check if any part of the table name is an EXACT match to a query word
+                    table_parts = table_name.split('_')
+                    query_words = re.findall(r'\w+', query_lower)
+                    for word in query_words:
+                        if len(word) >= 4 and word in table_parts:
                             exact_matches.append(ddl)
                             break
-                    # Also check if query words (like 'golden_setting') match the table name
-                    for word in re.findall(r'\w+', query_lower):
-                        if len(word) > 3 and (word in table_name or table_name in word):
-                            if ddl not in exact_matches:
-                                exact_matches.append(ddl)
-                                break
         
         # 2. Get vector results
         vectors = self.embedding_function.encode([question]).astype('float32')

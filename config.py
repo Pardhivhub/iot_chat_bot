@@ -24,7 +24,7 @@ class Config:
     
     # LLM Configuration
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.2")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.2:1b")
     
     # API Configuration
     API_KEY: str = os.getenv("BACKEND_API_KEY", "triniti-secret-key-2026")

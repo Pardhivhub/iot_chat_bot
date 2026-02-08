@@ -2,6 +2,7 @@ import re
 import sys
 import json
 import os
+import inflect
 from typing import Union, Optional
 
 import pandas as pd
@@ -41,8 +42,37 @@ class MindSQLCore:
         self.llm = llm
         self.feedback_logger = FeedbackLogger()
         self.golden_cache = GoldenCache()
-        self.relationship_graph = {}  # 🚀 Dynamic Join Graph
+        # 🚀 Load Manual Relationships (Ground Truth) from Config
+        self.manual_relationships = {}
+        rel_path = "relationships.json"
+        if os.path.exists(rel_path):
+            try:
+                with open(rel_path, 'r') as f:
+                    # Convert lists back to tuples for internal consistency
+                    raw_rels = json.load(f)
+                    for t1, targets in raw_rels.items():
+                        t1 = t1.lower()
+                        if t1 not in self.manual_relationships: self.manual_relationships[t1] = {}
+                        for t2, mapping in targets.items():
+                            t2 = t2.lower()
+                            if t2 not in self.manual_relationships: self.manual_relationships[t2] = {}
+                            
+                            val = tuple(mapping) if isinstance(mapping, list) and len(mapping) == 2 else mapping
+                            self.manual_relationships[t1][t2] = val
+                            
+                            # Bidirectional
+                            if isinstance(val, tuple):
+                                self.manual_relationships[t2][t1] = (val[1], val[0])
+                            else:
+                                self.manual_relationships[t2][t1] = val
+                log.info(f"Successfully loaded {len(self.manual_relationships)} manual relationship paths from {rel_path}")
+            except Exception as e:
+                log.error(f"Error loading {rel_path}: {e}")
+        
+        self.relationship_graph = self.manual_relationships.copy()
         self.current_db = None       # 🚀 Cached Current DB
+        self.sample_cache = {}      # 🚀 Cached sample data to avoid redundant DB hits
+        self.inflect_engine = inflect.engine() # 🚀 Reuse engine
 
     def create_database_query(self, question: str, connection: any, tables: list[str], 
                              validation_error: Optional[str] = None, **kwargs) -> str:
@@ -109,29 +139,124 @@ class MindSQLCore:
             return prompt
         return initial_prompt
 
-    def build_sql_prompt(self, question: str, connection: any, question_sql_list: list[str], tables: list[str],
-                         validation_error: Optional[str] = None, **kwargs) -> str:
+    def __inject_sample_values(self, ddl_list: list[str], connection) -> list[str]:
         """
-        Builds a comprehensive prompt for the LLM, incorporating DDLs, 
-        documentation, and optional relationship hints.
+        Enriches DDLs with actual sample data (CACHED).
+        Limits rows to 3 for speed and context economy.
+        """
+        enriched_ddls = []
+        schema = getattr(self.database, 'current_schema', 'public')
+        
+        for ddl in ddl_list:
+            match = re.search(r'TABLE NAME:\s*(\w+)', ddl)
+            if not match:
+                enriched_ddls.append(ddl)
+                continue
+            
+            table = match.group(1)
+            
+            # Use Cache if available
+            if table in self.sample_cache:
+                enriched_ddls.append(f"{ddl}\n\n{self.sample_cache[table]}")
+                continue
+
+            try:
+                # Get 3 sample rows
+                sample_query = f'SELECT * FROM "{schema}"."{table}" LIMIT 3;'
+                df = self.database.execute_sql(connection, sample_query)
+                
+                if df is not None and not df.empty:
+                    samples = df.to_string(index=False, max_rows=3, max_cols=8)
+                    
+                    sample_block = f"### SAMPLE DATA FROM '{table}' ###\n"
+                    sample_block += f"{samples}\n"
+                    sample_block += f"### END SAMPLE DATA ###\n"
+                    sample_block += f"⚠️  Use these actual values as reference.\n"
+                    
+                    self.sample_cache[table] = sample_block  # Populate Cache
+                    enriched_ddls.append(f"{ddl}\n\n{sample_block}")
+                else:
+                    enriched_ddls.append(ddl)
+            except Exception as e:
+                log.debug(f"Could not fetch samples for {table}: {e}")
+                enriched_ddls.append(ddl)
+        
+        return enriched_ddls
+
+    def build_sql_prompt(self, question: str, connection: any, question_sql_list: list[str], 
+                         tables: list[str], validation_error: Optional[str] = None, **kwargs) -> str:
+        """
+        Enhanced with VISUAL CONSTRAINT EMPHASIS
         """
         dialect_name = self.database.get_dialect()
         initial_prompt = self.__create_initial_prompt(question_sql_list, dialect_name)
 
         ddl_statements = self.__get_ddl_statements(connection, tables, question, **kwargs)
-        initial_prompt = self.stuff_ddl_in_prompt(initial_prompt, ddl_statements)
-
-        # 🔒 STEP 1 FIX: HARD GROUNDING
-        tables_and_columns = self.__extract_tables_and_columns_from_ddl(ddl_statements)
-        grounding_text = self.__create_grounding_text(tables_and_columns)
-        initial_prompt = f"{initial_prompt}\n\n{grounding_text}"
-
-        if validation_error:
-            initial_prompt = f"{initial_prompt}\n\n### PREVIOUS ATTEMPT FAILURE:\nYour previous SQL attempt failed validation with the following error:\n{validation_error}\n\nPlease correct the SQL while strictly following Relationship Hints and Foreign Key constraints. Do NOT repeat the same mistake."
+        
+        # Grounding with sample data (DISABLED FOR 1B MODEL SPEED)
+        # ddl_with_samples = self.__inject_sample_values(ddl_statements, connection)
+        ddl_with_samples = ddl_statements 
+        
+        # Use the variable that contains DDLs
+        # FIX: Ensure initial_prompt is updated with the DDL-stuffed version
+        initial_prompt = self.stuff_ddl_in_prompt(initial_prompt, ddl_with_samples)
 
         doc_statements = self.vectorstore.retrieve_relevant_documentation(question, **kwargs)
         initial_prompt = self.stuff_documentation_in_prompt(initial_prompt, doc_statements)
-        final_prompt = f"{initial_prompt}\n'Question': {question}"
+        
+        # === NEW: VISUAL CONSTRAINT BLOCK ===
+        constraint_block = f"""
+{'='*80}
+⚠️  CRITICAL RULES - VIOLATION = IMMEDIATE FAILURE ⚠️
+{'='*80}
+
+1. 🚫 NEVER use literal IDs when question mentions NAMES
+   ❌ WRONG: WHERE plant_id = 2
+   ✅ RIGHT: JOIN plants p ON ... WHERE p.plant_name ILIKE '%Plant B%'
+
+2. 🚫 NEVER skip tables provided in the DDL section
+   All tables are included because they're REQUIRED for the question.
+   If Relationship Hints show A → B → C, you MUST join through B.
+
+3. 🚫 NEVER invent join conditions not in RELATIONSHIP HINTS
+   Use ONLY the join paths specified below.
+
+4. ✅ ALWAYS join through name tables when question mentions entity names
+   "Plant B" → must JOIN plants table
+   "Line A" → must JOIN production_lines table
+
+{'='*80}
+"""
+        
+        final_prompt = f"{constraint_block}\n{initial_prompt}\n\n"
+        
+        # Add relationship hints in prominent position
+        final_prompt += f"\n### MANDATORY JOIN PATHS ###\n"
+        final_prompt += "To connect tables, you MUST use these exact relationships:\n\n"
+        
+        # Extract join paths from relationship_graph
+        if self.relationship_graph and len(tables) > 1:
+            tables_lower = [t.lower() for t in tables]
+            for i, t1 in enumerate(tables_lower):
+                for t2 in tables_lower[i+1:]:
+                    if t1 in self.relationship_graph and t2 in self.relationship_graph[t1]:
+                        mapping = self.relationship_graph[t1][t2]
+                        if isinstance(mapping, tuple) and len(mapping) == 2:
+                            c1, c2 = mapping
+                            final_prompt += f"- {t1} ⟷ {t2}: JOIN ON {t1}.{c1} = {t2}.{c2}\n"
+        
+        final_prompt += f"### END MANDATORY PATHS ###\n\n"
+        
+        if validation_error:
+            final_prompt += f"\n{'='*80}\n"
+            final_prompt += f"🔴 PREVIOUS ATTEMPT FAILED:\n{validation_error}\n"
+            final_prompt += f"{'='*80}\n\n"
+        
+        final_prompt += f"\n'Question': {question}\n\n"
+        final_prompt += f"{'='*80}\n"
+        final_prompt += f"⚠️  REMINDER: Follow the CRITICAL RULES at the top\n"
+        final_prompt += f"{'='*80}"
+        
         return final_prompt
 
     @staticmethod
@@ -228,37 +353,52 @@ class MindSQLCore:
     
     def __detect_primary_tables(self, question: str, connection=None) -> list[str]:
         """
-        🚀 Bucket 3: Intelligent Table Extraction.
-        Detects tables based on:
-        1. Explicit table name mention (tokenized)
-        2. Column name mention (Column-driven detection)
+        Enhanced with singular/plural normalization and semantic matching.
+        Fixes: "Plant B" now correctly matches "plants" table.
         """
         q = question.lower()
         primary = set()
         
-        # 1. Column-driven detection (Highest Precision)
+        p = self.inflect_engine
+        
         if connection:
+            # 1. Column-driven detection (Highest Precision)
             column_hints = self.__extract_column_hints(question, connection)
             metadata = self.__get_real_metadata(connection)
+            
             if metadata:
                 for table, info in metadata.items():
                     table_cols = [c.lower() for c in info.get("columns", {}).keys()]
                     for hint in column_hints:
                         if hint.lower() in table_cols:
                             primary.add(table)
+                            log.info(f"✓ Detected '{table}' via column '{hint}'")
 
-        # 2. Tokenized Table Name Detection
-        # e.g. "plants" matches "gmiiot_plants"
-        if connection and self.current_db:
-            all_tables = self.database.get_table_names(connection, self.current_db)
-            if all_tables is not None and not all_tables.empty:
-                table_names = [t.lower() for t in all_tables['table_name'].tolist()]
-                words = re.findall(r'\w+', q)
-                for word in words:
-                    if len(word) < 3: continue
-                    for t_name in table_names:
-                        if word in t_name or t_name in word:
-                            primary.add(t_name)
+            # 2. Enhanced Tokenized Table Name Detection
+            if self.current_db:
+                all_tables = self.database.get_table_names(connection, self.current_db)
+                if all_tables is not None and not all_tables.empty:
+                    table_names = [t.lower() for t in all_tables['table_name'].tolist()]
+                    words = re.findall(r'\b[a-zA-Z]{3,}\b', q)  # Extract words 3+ chars
+                    
+                    for word in words:
+                        # Get singular form
+                        word_singular = p.singular_noun(word) or word
+                        
+                        for t_name in table_names:
+                            t_singular = p.singular_noun(t_name) or t_name
+                            
+                            # Match conditions:
+                            # a) Exact match
+                            # b) Singular forms match
+                            # c) Word is core part of table name
+                            if (word == t_name or 
+                                word_singular == t_singular or
+                                (len(word_singular) >= 4 and word_singular in t_name) or
+                                (len(t_singular) >= 4 and t_singular in word)):
+                                
+                                primary.add(t_name)
+                                log.info(f"✓ Detected '{t_name}' via word '{word}' (singular: {word_singular})")
 
         return list(primary)
 
@@ -308,85 +448,85 @@ class MindSQLCore:
         A method to get the DDL statements.
         Enhanced with Deterministic Scoring and Strict Selection.
         """
-        if connection:
+        selected_tables = []
+        
+        # Priority 1: Use provided tables (from consistent ask_db selection)
+        if tables:
+            selected_tables = tables
+        
+        # Priority 2: Calculate if not provided
+        elif connection:
             # Deterministic Scoring
             scored_tables = self.__score_tables_deterministic(question, connection)
-            
             # Strict Selection
             selected_tables = self.__select_tables_strictly(scored_tables, question, connection)
             
-            if isinstance(selected_tables, str): # Ambiguity detected, return question
-                return selected_tables
+        if isinstance(selected_tables, str): # Ambiguity detected, return question
+            return selected_tables
 
-            if not selected_tables:
-                # Fallback to vectorstore RAG if no tables detected via scoring
-                log.info("No tables detected via scoring. Falling back to vectorstore RAG.")
-                ddl_statements = self.vectorstore.retrieve_relevant_ddl(question, **kwargs)
-                return ddl_statements
-
-            # Get DDLs for selected tables
-            ddl_statements = []
-            for table_name in selected_tables:
-                ddl = self.database.get_ddl(connection=connection, table_name=table_name)
-                if ddl:
-                    ddl_statements.append(ddl)
-            
-            # --- Mandatory Join Plan (Option G) ---
-            join_plan = self.__get_mandatory_join_plan(connection, selected_tables)
-            if join_plan:
-                ddl_statements.append(join_plan)
-            
+        if not selected_tables:
+            # Fallback to vectorstore RAG if no tables detected via scoring
+            # Fallback to vectorstore RAG if no tables detected via scoring
+            log.warning("⚠️ No tables detected via scoring. Falling back to vectorstore RAG. schema might be STALE if database changed!")
+            log.info("Suggestion: Run reset_system.py to clear old vector embeddings if you recently changed databases.")
+            ddl_statements = self.vectorstore.retrieve_relevant_ddl(question, **kwargs)
             return ddl_statements
+
+        # Get DDLs for selected tables
+        ddl_statements = []
+        for table_name in selected_tables:
+            ddl = self.database.get_ddl(connection=connection, table_name=table_name)
+            if ddl:
+                ddl_statements.append(ddl)
+        
+        # --- Mandatory Join Plan (Option G) ---
+        join_plan = self.__get_mandatory_join_plan(connection, selected_tables)
+        if join_plan:
+            ddl_statements.append(join_plan)
+        
+        return ddl_statements
         
         return []
 
     def __get_mandatory_join_plan(self, connection, tables: list[str]) -> str:
         """
         🔒 OPTION G: Deterministic Join Planning
-        Generates MANDATORY join clauses from FK metadata.
+        Generates MANDATORY join clauses from relationship graph.
         LLM is NOT allowed to modify these joins.
         """
         if not self.relationship_graph or len(tables) < 2:
             return ""
             
-        db_name = getattr(self, 'current_db', None)
-        if not db_name:
-            # Try to get from connection object if available
-            try:
-                db_name = connection.info.dbname # Postgres specific
-            except:
-                return ""
-
-        fk_df = self.database.get_foreign_keys(connection, db_name)
-        if fk_df is None or fk_df.empty:
-            return ""
-            
-        plan = "\n### MANDATORY JOIN PLAN (DO NOT MODIFY) ###\n"
-        plan += "You MUST use ONLY these join conditions. DO NOT invent joins.\n\n"
+        plan = "\n### RELATIONSHIP HINTS (MANDATORY) ###\n"
+        plan += "To connect the selected tables, you MUST use EXACTLY these JOIN clauses. DO NOT invent your own.\n\n"
         
-        # Filter for FKs that link tables within our selected set (case-insensitive)
+        found_joins = set()
         tables_lower = [t.lower() for t in tables]
-        relevant_fks = fk_df[
-            (fk_df['table_name'].str.lower().isin(tables_lower)) & 
-            (fk_df['foreign_table_name'].str.lower().isin(tables_lower))
-        ]
         
-        if relevant_fks.empty:
+        # We assume the first table in the list or the one with highest score is the anchor
+        # tables is already the filtered list from __select_tables_strictly
+        
+        for i, t1 in enumerate(tables_lower):
+            for t2 in tables_lower[i+1:]:
+                # Find if they are directly connected
+                if t1 in self.relationship_graph and t2 in self.relationship_graph[t1]:
+                    mapping = self.relationship_graph[t1][t2]
+                    if isinstance(mapping, tuple) and len(mapping) == 2:
+                        c1, c2 = mapping
+                        # Standardize order to avoid bidirectional duplicates
+                        pair = tuple(sorted([f"{t1}.{c1}", f"{t2}.{c2}"]))
+                        if pair not in found_joins:
+                            plan += f"- {t1} JOIN {t2} ON {t1}.{c1} = {t2}.{c2}\n"
+                            found_joins.add(pair)
+        
+        if not found_joins:
             return ""
-            
-        for _, row in relevant_fks.iterrows():
-            t1 = row['table_name']
-            c1 = row['column_name']
-            t2 = row['foreign_table_name']
-            c2 = row['foreign_column_name']
-            plan += f"{t1}.{c1} = {t2}.{c2}\n"
             
         plan += "\nRULES:\n"
-        plan += "- You MUST use ONLY these joins\n"
-        plan += "- You MUST NOT invent join conditions\n"
-        plan += "- You MUST NOT skip intermediate tables\n"
-        plan += "- Violating this = INVALID SQL\n"
-        plan += "### END MANDATORY JOIN PLAN ###\n"
+        plan += "- Use ONLY the join paths listed above.\n"
+        plan += "- If you need to connect A and C, and the list shows A-B and B-C, you MUST join through B.\n"
+        plan += "- Violating these paths will result in invalid SQL.\n"
+        plan += "### END RELATIONSHIP HINTS ###\n"
             
         return plan
 
@@ -424,17 +564,38 @@ class MindSQLCore:
                 # Use cached SQL directly for execution (assuming it was verified once)
                 ddl_list = self.__get_ddl_statements(connection, table_names, question, **kwargs)
             else:
-                max_retries = 3
+                max_retries = 1  # FAIL FAST: Only 1 retry allowed
                 current_retry = 0
                 
-                # Fetch DDLs/Ambiguity Check once before starting retries
+                # Step 1: Explicit Table Selection (if not provided)
+                if not table_names and connection:
+                    log.info("Starting table selection process...")
+                    scored_tables = self.__score_tables_deterministic(question, connection)
+                    # Use stricter selection logic
+                    table_names = self.__select_tables_strictly(scored_tables, question, connection)
+                    
+                    if isinstance(table_names, str): # Ambiguity detected
+                        result["response"] = table_names
+                        return result
+                    
+                    if not table_names:
+                        log.warning("No tables selected via strict matching. Attempting broader search.")
+                        
+                import time
+                total_start_time = time.time()
+                
+                # Step 2: Get DDLs using the selected tables
+                log.info("Fetching DDL statements...")
                 ddl_list = self.__get_ddl_statements(connection, table_names, question, **kwargs)
                 if isinstance(ddl_list, str): # Ambiguity detected
                     result["response"] = ddl_list
                     return result
+                log.info(f"Fetched {len(ddl_list)} DDL blocks.")
 
                 current_validation_error = None
                 while current_retry < max_retries:
+                    log.info(f"Starting SQL generation attempt {current_retry + 1}...")
+                    sql_gen_start = time.time()
                     sql = self.create_database_query(
                         question=question, 
                         connection=connection, 
@@ -442,6 +603,7 @@ class MindSQLCore:
                         validation_error=current_validation_error,
                         **kwargs
                     )
+                    log.info(f"SQL generation took {time.time() - sql_gen_start:.2f}s")
                     result["sql"] = sql
 
                     if not sql or "I cannot find" in sql or "invalid" in sql.lower():
@@ -450,29 +612,63 @@ class MindSQLCore:
                         log.info(f"Invalid SQL generated, retry {current_retry}/{max_retries}")
                         continue
 
-                    # 1. Column Validation
+                    # Extract the list of tables provided in DDL context for validation
+                    context_tables = []
+                    for ddl in ddl_list:
+                        match = re.search(r'TABLE NAME:\s*(\w+)', ddl)
+                        if match: 
+                            context_tables.append(match.group(1))
+
+                    log.info(f"Starting validation pipeline for SQL: {sql[:100]}...")
+                    # === OPTIMIZED VALIDATION ORDER (FIX 1.5) ===
+                    # 1. FASTEST: Literal value check (regex only)
+                    log.info("Running Literal Value Validation...")
+                    is_valid, err_msg = self.__validate_literal_values(sql, connection, question)
+                    if not is_valid:
+                        current_retry += 1
+                        current_validation_error = err_msg
+                        log.info(f"🚫 Literal Value Validation failed: {err_msg}, retry {current_retry}/{max_retries}")
+                        print(f"DEBUG: Literal Value Validation failed: {err_msg}")
+                        continue
+
+                    # 2. FAST: Required tables check (regex only)
+                    # Pass context_tables which contains all tables identified as relevant
+                    is_valid, err_msg = self.__validate_required_tables(sql, context_tables)
+                    if not is_valid:
+                        current_retry += 1
+                        current_validation_error = err_msg
+                        log.info(f"🚫 Required Tables Validation failed: {err_msg}, retry {current_retry}/{max_retries}")
+                        print(f"DEBUG: Required Tables Validation failed: {err_msg}")
+                        continue
+
+                    # 3. MEDIUM: Column validation (metadata lookup)
+                    log.info("Running Column Validation...")
                     is_valid, err_msg = self.__validate_sql_columns(sql, ddl_list)
                     if not is_valid:
                         current_retry += 1
-                        current_validation_error = f"Validation Error: {err_msg}"
-                        log.info(f"SQL Validation failed: {err_msg}, retry {current_retry}/{max_retries}")
+                        current_validation_error = err_msg
+                        log.info(f"🚫 Column Validation failed: {err_msg}, retry {current_retry}/{max_retries}")
                         continue
-                    
-                    # 2. FK-Only Join Validation (Option G)
-                    is_valid, err_msg = self.__validate_sql_joins(sql, connection)
-                    if not is_valid:
-                        current_retry += 1
-                        current_validation_error = f"FK Validation Error: {err_msg}"
-                        log.info(f"FK Validation failed: {err_msg}, retry {current_retry}/{max_retries}")
-                        continue
-                    
-                    # 3. Semantic Logic Validation (Option H)
+
+                    # 4. MEDIUM: Semantic validation (type checking)
+                    log.info("Running Semantic Validation...")
                     is_valid, err_msg = self.__validate_semantic_logic(sql, connection)
                     if not is_valid:
                         current_retry += 1
-                        current_validation_error = f"Semantic Error: {err_msg}"
-                        log.info(f"Semantic Validation failed: {err_msg}, retry {current_retry}/{max_retries}")
+                        current_validation_error = err_msg
+                        log.info(f"🚫 Semantic Validation failed: {err_msg}, retry {current_retry}/{max_retries}")
                         continue
+
+                    # 5. EXPENSIVE: FK validation (graph traversal)
+                    log.info("Running FK Join Validation...")
+                    is_valid, err_msg = self.__validate_sql_joins(sql, connection)
+                    if not is_valid:
+                        current_retry += 1
+                        current_validation_error = err_msg
+                        log.info(f"🚫 FK Validation failed: {err_msg}, retry {current_retry}/{max_retries}")
+                        continue
+                    
+                    log.info("✅ All validations PASSED.")
                     
                     # If all validations pass
                     break
@@ -491,7 +687,10 @@ class MindSQLCore:
                     return result
 
             # 4. EXECUTION (Shared for both Cache HIT and fresh SUCCESS)
+            log.info(f"Executing SQL: {sql}")
+            exec_start = time.time()
             df = self.database.execute_sql(connection, sql)
+            log.info(f"SQL execution took {time.time() - exec_start:.2f}s")
 
             if df is None or df.empty:
                 response = "No data exists for your query."
@@ -518,8 +717,11 @@ class MindSQLCore:
             return result
 
         except Exception as e:
-            log.warning(f"An unexpected error occurred: {e}")
-            result["error"] = e
+            import traceback
+            tb = traceback.format_exc()
+            log.warning(f"An unexpected error occurred: {str(e)}\n{tb}")
+            # Important: stringify the exception for JSON serialization
+            result["error"] = str(e)
             result["response"] = f"An error occurred: {str(e)}"
             return result
 
@@ -588,7 +790,7 @@ class MindSQLCore:
         analysis_keywords = [
             "explain", "relationship", "trend", "pattern", "why",
             "how does", "what is the difference", "analysis", "compare",
-            "what is", "about", "details", "information", "tell me about"
+            "deep dive", "summary", "overview"
         ]
         q_lower = question.lower()
         return any(keyword in q_lower for keyword in analysis_keywords)
@@ -753,10 +955,12 @@ class MindSQLCore:
             found_rel = False
             for t_idx, t1 in enumerate(tables_involved):
                 t1_lower = t1.lower()
-                neighbors = self.relationship_graph.get(t1_lower, [])
+                neighbors = self.relationship_graph.get(t1_lower, {})
+                # Handle both set (discovered) and dict (manual) neighbors
+                neighbor_names = neighbors.keys() if isinstance(neighbors, dict) else neighbors
                 for t2 in tables_involved[t_idx+1:]:
                     t2_lower = t2.lower()
-                    if t2_lower in neighbors:
+                    if t2_lower in neighbor_names:
                         explanation += f"- '{t1}' can join directly with '{t2}'\n"
                         found_rel = True
                     else:
@@ -799,26 +1003,36 @@ class MindSQLCore:
             table_lower = table.lower()
             cols = info.get("columns", {})
             
-            # +15 Exact Table Name (Boosted from +8 to favor explicit table mentions)
-            if table_lower in q_lower:
-                scores[table] += 15
-            
-            # +6 Tokenized table match
+            # +25 Exact Word Match with Table Name (High Priority Subject)
             for word in words:
-                if len(word) >= 3 and (word in table_lower or table_lower in word) and table_lower not in q_lower:
-                    scores[table] += 6
+                word_singular = word[:-1] if word.endswith('s') else word
+                table_singular = table_lower[:-1] if table_lower.endswith('s') else table_lower
+                if word == table_lower or word_singular == table_singular:
+                    scores[table] += 25
+                    break
+
+            # +15 Exact Table Name Substring Match
+            if table_lower in q_lower and scores[table] < 25:
+                scores[table] += 15
+                
+            # +6 Tokenized table match (Only if word is a significant part of the table name)
+            for word in words:
+                if len(word) >= 4 and word in table_lower and table_lower not in q_lower:
+                    # Ensure word isn't just a common suffix/prefix
+                    if word not in ["line", "type", "stat", "meta"]:
+                        scores[table] += 6
 
             for col in cols.keys():
                 col_lower = col.lower()
                 pattern = r'\b' + re.escape(col_lower) + r'\b'
                 
-                # +10 Exact Column Name
+                # +10 Exact Column Name (Only for non-generic columns)
                 if re.search(pattern, q_lower):
-                    scores[table] += 10
-                    
-                    # +5 Filter Intent
-                    if col_lower in filter_keywords:
-                        scores[table] += 5
+                    if col_lower not in ["id", "name", "status", "type"]:
+                        scores[table] += 10
+                        # +5 Filter Intent
+                        if col_lower in filter_keywords:
+                            scores[table] += 5
 
         # 2. Vector Search Scoring (+5 boost)
         # Combine string detection with semantic search
@@ -895,14 +1109,65 @@ class MindSQLCore:
 
     def __select_tables_strictly(self, scored_tables: dict, question: str, connection) -> Union[list[str], str]:
         """
-        Strict Selection Rules:
-        - Primary table (highest score)
-        - Secondary (score > 10 OR required for join)
-        - Intermediate (FK required)
-        - Detect Ambiguity: If multiple high-scoring tables have same score and same columns.
+        Strict Selection Rules with SUBJECT LOCK:
+        1. Detect grammatical subject of question
+        2. FORCE include table matching subject (prevents skipping "plants" for "Plant B")
+        3. Add high-scoring tables
+        4. Add intermediate join tables
         """
-        if not scored_tables: return []
+        if not scored_tables: 
+            return []
         
+        metadata = self.__get_real_metadata(connection)
+        
+        # === NEW: SUBJECT DETECTION AND LOCK ===
+        q_lower = question.lower()
+        p = self.inflect_engine
+        
+        # Detect subject using positional patterns
+        subject_patterns = [
+            r'\bin\s+([a-z][\w\s]*?)(?:\s+(?:that|which|where|with|is|are|has|have|currently)|\?|$)',
+            r'\bat\s+([a-z][\w\s]*?)(?:\s+(?:that|which|where|with|is|are)|\?|$)',
+            r'\bfor\s+([a-z][\w\s]*?)(?:\s+(?:that|which|where|with|is|are)|\?|$)',
+            r'\bfrom\s+([a-z][\w\s]*?)(?:\s+(?:that|which|where|with|is|are)|\?|$)',
+        ]
+        
+        detected_subject = None
+        for pattern in subject_patterns:
+            match = re.search(pattern, q_lower)
+            if match:
+                detected_subject = match.group(1).strip()
+                # Clean up: remove trailing common words
+                detected_subject = re.sub(r'\s+(that|which|where|with|is|are)$', '', detected_subject)
+                log.info(f"🎯 Detected subject: '{detected_subject}'")
+                break
+        
+        # Apply SUBJECT LOCK: Force include matching table
+        p = inflect.engine()
+        if detected_subject:
+            for table in scored_tables.keys():
+                table_lower = table.lower()
+                # Match if subject contains table name (singular/plural tolerant)
+                table_singular = p.singular_noun(table_lower) or table_lower
+                
+                words_in_subject = detected_subject.split()
+                for word in words_in_subject:
+                    # Skip short words to prevent false positives (e.g. "B" matching "Batches")
+                    if len(word) < 3:
+                        continue
+                        
+                    word_singular = p.singular_noun(word) or word
+                    
+                    # Stricter matching: Exact word or singular match
+                    if (word == table_lower or 
+                        word_singular == table_singular or
+                        word == table_singular or
+                        word_singular == table_lower):
+                        
+                        scored_tables[table] = max(scored_tables[table], 100)  # 🔒 LOCK
+                        log.info(f"🔒 SUBJECT LOCK: Table '{table}' locked for inclusion (subject: '{detected_subject}')")
+        
+        # === CONTINUE WITH EXISTING LOGIC ===
         sorted_tables = sorted(scored_tables.items(), key=lambda x: x[1], reverse=True)
         max_score = sorted_tables[0][1]
         
@@ -912,7 +1177,6 @@ class MindSQLCore:
         # Ambiguity Check
         top_tables = [t for t, s in sorted_tables if s == max_score and s > 0]
         if len(top_tables) > 1:
-            metadata = self.__get_real_metadata(connection)
             q_lower = question.lower()
             
             # Find the ambiguous columns
@@ -931,58 +1195,40 @@ class MindSQLCore:
             if ambiguous_cols:
                 col, tables = ambiguous_cols[0] # Pick first ambiguity
                 return f"The column '{col}' exists in multiple tables: {', '.join(tables)}. Which one do you mean?"
-
-        # Selection
-        # 1. Start with the top scoring table (above 0)
-        if not sorted_tables or sorted_tables[0][1] <= 0:
-            return []
-            
-        selected = {sorted_tables[0][0]}
         
-        # 2. Add high-scoring secondary tables (score >= 10 for broader coverage)
-        # Limit to top 10 high-scoring tables to balance coverage vs context
-        secondary_count = 0
-        for table, score in sorted_tables[1:]:
-            if score >= 10 and secondary_count < 10:
-                selected.add(table)
-                secondary_count += 1
-
-        # Add Intermediates to ensure connectivity
-        final_selection = set(selected)
-        if len(selected) > 1 and self.relationship_graph:
-            # We want to make sure all selected tables can reach the primary table
-            primary = sorted_tables[0][0].lower()
-            for other in selected:
-                if other.lower() == primary: continue
+        # Selection (modified to respect LOCK)
+        seeds = []
+        for table, score in sorted_tables:
+            if score >= 20 or score == 100:  # Include LOCKED tables
+                seeds.append(table)
+            if len(seeds) >= 5:
+                break
+        
+        if not seeds and sorted_tables and sorted_tables[0][1] > 0:
+            seeds.append(sorted_tables[0][0])
+        
+        # Add intermediate join tables
+        final_selection = set(seeds)
+        if len(seeds) > 1 and self.relationship_graph:
+            primary = seeds[0].lower()
+            for other in seeds[1:]:
                 path = self.__find_shortest_path(primary, other.lower())
                 if path:
-                    # Map lowercase paths back to case-sensitive table names
-                    for p in path:
-                        for real_table in scored_tables.keys():
-                            if real_table.lower() == p:
+                    for p_node in path:
+                        for real_table in metadata.keys():
+                            if real_table.lower() == p_node:
                                 final_selection.add(real_table)
         
-        # Final safety cap: If we still have too many tables, only take top 10 and their join paths
-        if len(final_selection) > 12:
-            log.warning(f"Too many tables ({len(final_selection)}) selected. Capping to top 5 + paths.")
-            top_5_orig = [t for t, s in sorted_tables[:5]]
-            final_selection = set(top_5_orig)
-            primary = top_5_orig[0].lower()
-            for other in top_5_orig[1:]:
-                path = self.__find_shortest_path(primary, other.lower())
-                for p in path:
-                    for real_table in scored_tables.keys():
-                        if real_table.lower() == p:
-                            final_selection.add(real_table)
+        # Safety cap
+        if len(final_selection) > 7:
+            log.warning(f"Too many tables ({len(final_selection)}) selected. Capping to 7.")
+            # Prioritize locked/seed tables if possible, but for now just slice
+            # Better strategy: keep seeds (high score) + intermediates (path)
+            # Simple slice for now to ensure speed
+            final_selection = set(list(final_selection)[:7])
 
-        # Log final selection with scores
         final_list = list(final_selection)
-        log.info("FINAL TABLE SELECTION:")
-        for table in final_list:
-            score = scored_tables.get(table, 0)
-            log.info(f"  ✓ {table:<40} (Score: {score})")
-        log.info(f"Total tables selected: {len(final_list)}")
-        
+        log.info(f"FINAL TABLE SELECTION: {', '.join(final_list)}")
         return final_list
 
     def __get_real_metadata(self, connection) -> dict:
@@ -1118,7 +1364,10 @@ class MindSQLCore:
         keywords = {
             'select', 'from', 'where', 'limit', 'join', 'on', 'group', 'by', 'order', 'desc', 'asc', 
             'and', 'or', 'in', 'is', 'not', 'null', 'count', 'sum', 'avg', 'min', 'max', 'as', 
-            'distinct', 'inner', 'left', 'right', 'outer', 'between', 'like', 'any', 'all', 'exists', 'values'
+            'distinct', 'inner', 'left', 'right', 'outer', 'between', 'like', 'ilike', 'any', 'all', 'exists', 'values',
+            'having', 'union', 'intersect', 'except', 'case', 'when', 'then', 'else', 'end', 'cast', 'extract',
+            'date_trunc', 'now', 'current_date', 'current_timestamp', 'interval', 'over', 'partition', 'row_number',
+            'rank', 'dense_rank', 'lag', 'lead', 'first_value', 'last_value'
         }
         
         for word in all_words:
@@ -1216,43 +1465,177 @@ class MindSQLCore:
             valid_joins.add((t1, c1, t2, c2))
             valid_joins.add((t2, c2, t1, c1))  # Bidirectional
         
+        # Extract Table Aliases from SQL (e.g., "machines AS t1")
+        alias_pattern = r'([\w]+)\s+(?:AS\s+)?([\w]+)'
+        aliases = {}
+        
+        # Simple extraction of aliases from FROM and JOIN clauses
+        from_match = re.search(r'FROM\s+[\"`]?(\w+)[\"`]?(?:\s+(?:AS\s+)?[\"`]?(\w+)[\"`]?)?', sql, re.IGNORECASE)
+        if from_match:
+            table_name = from_match.group(1).lower()
+            alias = from_match.group(2)
+            if alias:
+                aliases[alias.lower()] = table_name
+            else:
+                aliases[table_name] = table_name
+
+        join_table_pattern = r'JOIN\s+[\"`]?(\w+)[\"`]?(?:\s+(?:AS\s+)?[\"`]?(\w+)[\"`]?)?'
+        for match in re.finditer(join_table_pattern, sql, re.IGNORECASE):
+            table_name = match.group(1).lower()
+            alias = match.group(2)
+            if alias:
+                aliases[alias.lower()] = table_name
+            else:
+                aliases[table_name] = table_name
+
         # Extract JOIN ... ON clauses from SQL
-        join_pattern = r'JOIN\s+["`]?(\w+)["`]?(?:\s+AS\s+["`]?(\w+)["`]?)?\s+ON\s+([\w.]+)\s*=\s*([\w.]+)'
+        join_pattern = r'JOIN\s+[\"`]?\w+[\"`]?(?:\s+(?:AS\s+)?[\"`]?\w+[\"`]?)?\s+ON\s+([\w.]+)\s*=\s*([\w.]+)'
         clean_sql = re.sub(r"'.*?'", " ", sql)  # Remove string literals
         
         for match in re.finditer(join_pattern, clean_sql, re.IGNORECASE):
-            left_expr = match.group(3).lower()
-            right_expr = match.group(4).lower()
+            left_expr = match.group(1).lower()
+            right_expr = match.group(2).lower()
             
             # Parse table.column from expressions
             def parse_col(expr):
                 parts = expr.split('.')
                 if len(parts) == 2:
-                    return parts[0].strip(), parts[1].strip()
+                    t_alias = parts[0].strip()
+                    col = parts[1].strip()
+                    # Resolve alias to real table name
+                    real_t = aliases.get(t_alias, t_alias)
+                    return real_t, col
                 return None, None
             
             t1, c1 = parse_col(left_expr)
             t2, c2 = parse_col(right_expr)
             
             if not all([t1, c1, t2, c2]):
-                continue  # Skip malformed joins
+                continue 
             
-            # Check if this join exists in FK metadata
-            if (t1, c1, t2, c2) not in valid_joins:
-                err = f"Illegal join: {t1}.{c1} = {t2}.{c2}. This is not a valid FK relationship."
-                log.warning(f"FK Validation FAILED: {err}")
+            # Validation Logic:
+            # 1. Check if join exists in internal relationship_graph (Manual + Discovered)
+            is_known_rel = False
+            if self.relationship_graph:
+                if t1 in self.relationship_graph and t2 in self.relationship_graph[t1]:
+                    rel_val = self.relationship_graph[t1][t2]
+                    if isinstance(rel_val, (list, tuple)) and len(rel_val) == 2:
+                        k1, k2 = [str(x).lower() for x in rel_val]
+                        if (c1 == k1 and c2 == k2) or (c1 == k2 and c2 == k1): # Check both directions
+                            is_known_rel = True
+                    else:
+                        # Simple table-level connection exists (no specific column mapping provided)
+                        is_known_rel = True
+                # Also check the reverse direction in relationship_graph
+                elif t2 in self.relationship_graph and t1 in self.relationship_graph[t2]:
+                    rel_val = self.relationship_graph[t2][t1]
+                    if isinstance(rel_val, (list, tuple)) and len(rel_val) == 2:
+                        k1, k2 = [str(x).lower() for x in rel_val]
+                        if (c1 == k2 and c2 == k1) or (c1 == k1 and c2 == k2): # Check both directions
+                            is_known_rel = True
+                    else:
+                        is_known_rel = True
+
+
+            if not is_known_rel:
+                err = f"Illegal join: {t1}.{c1} = {t2}.{c2}. This join is not defined in the relationship hierarchy."
+                log.warning(f"Join Validation FAILED: {err}")
                 return False, err
         
         return True, ""
 
-    def __validate_semantic_logic(self, sql: str, connection) -> tuple[bool, str]:
-        """
-        🛡️ OPTION H: Semantic guardrails to catch logical errors.
-        - Reject LIKE on INTEGER/ID columns
-        - Reject string filters on TIMESTAMP columns
-        """
-        metadata = self.__get_real_metadata(connection)
+    # --- DELETED TRUNCATED DUPLICATE METHOD ---
         
+    def __validate_literal_values(self, sql: str, connection, question: str) -> tuple[bool, str]:
+        """
+        🛡️ CRITICAL: Prevents AI from guessing literal IDs when question mentions names.
+        """
+        # Extract all literal ID comparisons (e.g., plant_id = 2, line_id = 5)
+        literal_pattern = r'(\w+)\.?(\w+_id|id)\s*=\s*(\d+)'
+        
+        violations = []
+        
+        for match in re.finditer(literal_pattern, sql, re.IGNORECASE):
+            table_or_alias = match.group(1)
+            column = match.group(2)
+            literal_value = match.group(3)
+            
+            # Check if question contains entity NAMES (not IDs)
+            name_patterns = {
+                'plant': r'\b(plant\s+[A-Z0-9][\w-]*)\b',
+                'line': r'\b((?:production\s+)?line\s+[A-Z0-9][\w-]*)\b',
+                'machine': r'\b(machine\s+[\w-]+)\b',
+            }
+            
+            for entity_type, pattern in name_patterns.items():
+                if entity_type in column.lower():  # e.g., plant_id → check for plant names
+                    name_match = re.search(pattern, question, re.IGNORECASE)
+                    if name_match:
+                        entity_name = name_match.group(1)
+                        violations.append({
+                            'column': column,
+                            'literal': literal_value,
+                            'entity_name': entity_name,
+                            'entity_type': entity_type
+                        })
+        
+        if violations:
+            v = violations[0]  # Report first violation
+            err = (
+                f"🚫 HALLUCINATION DETECTED: You used a literal ID ({v['column']} = {v['literal']}) "
+                f"but the question mentions '{v['entity_name']}'. "
+                f"\n\n"
+                f"REQUIRED FIX:\n"
+                f"1. JOIN the '{v['entity_type']}s' table\n"
+                f"2. Replace '{v['column']} = {v['literal']}' with "
+                f"'{v['entity_type']}s.{v['entity_type']}_name ILIKE '%{v['entity_name'].split()[-1]}%'\n"
+                f"\n"
+                f"Example Pattern:\n"
+                f"FROM ... JOIN {v['entity_type']}s AS TX ON ... \n"
+                f"WHERE TX.{v['entity_type']}_name ILIKE '{v['entity_name']}'"
+            )
+            log.error(f"Literal Value Validation FAILED: {err}")
+            return False, err
+        
+        return True, ""
+
+    def __validate_required_tables(self, sql: str, required_tables: list[str]) -> tuple[bool, str]:
+        """
+        🛡️ Ensures ALL tables provided in context are actually used in SQL.
+        Prevents AI from "skipping" intermediate join tables.
+        """
+        sql_lower = sql.lower()
+        
+        # Remove table names from string literals to avoid false positives
+        clean_sql = re.sub(r"'[^']*'", "", sql_lower)
+        
+        missing_tables = []
+        
+        for table in required_tables:
+            table_lower = table.lower()
+            
+            # Check if table appears in FROM or JOIN clause
+            pattern = rf'\b(from|join)\s+["`]?{re.escape(table_lower)}["`]?(?:\s+as\s+\w+|\s+\w+)?'
+            
+            if not re.search(pattern, clean_sql):
+                missing_tables.append(table)
+        
+        if missing_tables:
+            err = (
+                f"🚫 TABLE SKIPPING DETECTED: The following required tables are missing from your SQL:\n"
+                f"{', '.join(missing_tables)}\n\n"
+                f"These tables were included because they are NECESSARY to answer the question.\n"
+                f"You MUST include them in your JOIN path.\n\n"
+                f"Required tables: {', '.join(required_tables)}\n"
+                f"Tables found in SQL: {', '.join([t for t in required_tables if t not in missing_tables])}"
+            )
+            log.error(f"Required Tables Validation FAILED: {err}")
+            return False, err
+        
+        return True, ""
+
+    def __validate_semantic_logic(self, sql: str, connection) -> tuple[bool, str]:
+        metadata = self.__get_real_metadata(connection)
         # Build type map: {table.column: type}
         type_map = {}
         for table, info in metadata.items():
@@ -1430,18 +1813,21 @@ class MindSQLCore:
         # 1. First, Discover Relationships (Bucket ❌ Elimination)
         log.info(f"Discovering relationships for database: {db_name}")
         fk_df = self.database.get_foreign_keys(connection, db_name)
-        self.relationship_graph = {}
+        
+        # Merge manual relationships with discovered ones
+        self.relationship_graph = self.manual_relationships.copy()
         
         if fk_df is not None and not fk_df.empty:
             for _, row in fk_df.iterrows():
                 t1 = row['table_name'].lower()
                 t2 = row['foreign_table_name'].lower()
                 
-                if t1 not in self.relationship_graph: self.relationship_graph[t1] = set()
-                if t2 not in self.relationship_graph: self.relationship_graph[t2] = set()
+                if t1 not in self.relationship_graph: self.relationship_graph[t1] = {}
+                if t2 not in self.relationship_graph: self.relationship_graph[t2] = {}
                 
-                self.relationship_graph[t1].add(t2)
-                self.relationship_graph[t2].add(t1)
+                # Store the join bridge (column mapping)
+                self.relationship_graph[t1][t2] = (row['column_name'], row['foreign_column_name'])
+                self.relationship_graph[t2][t1] = (row['foreign_column_name'], row['column_name'])
             
             log.info(f"Discovered {len(fk_df)} relationship(s) across {len(self.relationship_graph)} table(s).")
         
@@ -1474,20 +1860,25 @@ class MindSQLCore:
                 # Find columns that look like names, codes, or keys
                 try:
                     column_query = f"""
-                        SELECT column_name 
-                        FROM information_schema.columns 
-                        WHERE table_name = '{table.lower()}' 
-                        AND table_schema = '{schema}'
-                        AND (column_name LIKE '%name%' OR column_name LIKE '%code%' OR column_name LIKE '%id%' OR column_name LIKE '%status%')
-                        LIMIT 10;
-                    """
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = '{table.lower()}' 
+                    AND table_schema = '{schema}'
+                    AND (column_name LIKE '%name%' OR column_name LIKE '%code%')
+                    LIMIT 2;
+                """
                     col_df = self.database.execute_sql(connection, column_query)
                     if col_df is not None and not col_df.empty:
                         for col in col_df['column_name']:
                             sample_query = f'SELECT DISTINCT "{col}" FROM "{schema}"."{table}" WHERE "{col}" IS NOT NULL LIMIT 20;'
                             samples = self.database.execute_sql(connection, sample_query)
                             if samples is not None and not samples.empty:
-                                vals = ", ".join([str(v) for v in samples[col].tolist() if v])
+                                # Prefer longer strings for better semantic lookup
+                                vals_list = [str(v) for v in samples[col].tolist() if v and len(str(v)) > 3]
+                                if not vals_list: # Fallback to all if everything is short
+                                    vals_list = [str(v) for v in samples[col].tolist() if v]
+                                
+                                vals = ", ".join(vals_list[:10])
                                 if vals:
                                     sample_doc = f"Table '{table}' contains values like: {vals} in column '{col}'"
                                     self.index(documentation=sample_doc)

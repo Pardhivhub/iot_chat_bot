@@ -43,13 +43,21 @@ class DeepSeek(ILlm):
         temperature = kwargs.get('temperature', 0.1)
 
         try:
+            log.info(f"Invoking model '{model}' with prompt length: {len(prompt)}")
+            import time
+            start_time = time.time()
+            
             response = self.client.chat(
                 model=model,
                 messages=[self.user_message(prompt)],
                 options=Options(
-                    temperature=temperature
+                    temperature=temperature,
+                    num_ctx=16384  # 🚀 Increase context window for large DDL prompts
                     )
             )
+            
+            duration = time.time() - start_time
+            log.info(f"Model '{model}' responded in {duration:.2f}s")
 
             content = response['message']['content']
             

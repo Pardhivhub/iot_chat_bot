@@ -19,7 +19,7 @@ def chat():
                 print("Goodbye!")
                 break
             
-            print("Processing... (first query may take 2-3 minutes for DDL indexing)", end="\r")
+            print("Thinking... 🧠", end="\r")
             
             import os
             api_key = os.getenv("BACKEND_API_KEY", "triniti-secret-key-2026") # Fallback for local testing if not set
@@ -31,7 +31,7 @@ def chat():
                     "Content-Type": "application/json",
                     "X-API-Key": api_key
                 },
-                timeout=300  # Increased for DDL indexing + Ollama warmup on first request
+                timeout=600  # Increased for larger 8B model processing
             )
             
             if response.status_code == 200:

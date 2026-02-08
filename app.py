@@ -163,7 +163,9 @@ async def ask_question(request: QuestionRequest):
     try:
         # Offload the heavy blocking work to a threadpool
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, minds.ask_db, db_connection, request.question)
+        # Note: run_in_executor does not support keyword arguments.
+        # Signature: minds.ask_db(connection, question, table_names, visualize, **kwargs)
+        result = await loop.run_in_executor(None, minds.ask_db, db_connection, request.question, None, False)
         
         # Format result
         sql_result = []
@@ -172,15 +174,28 @@ async def ask_question(request: QuestionRequest):
             if isinstance(df, pd.DataFrame):
                 sql_result = df.to_dict(orient='records')
 
+        # Serialize result to be JSON safe (handle datetimes, decimals, etc.)
+        import json
+        from datetime import datetime
+        class DateTimeEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                return str(obj)
+
+        json_safe_result = json.loads(json.dumps(sql_result, cls=DateTimeEncoder))
+
         return {
             "question": request.question,
             "sql": result.get("sql"),
-            "result": sql_result,
+            "result": json_safe_result,
             "answer": result.get("response")
         }
     except Exception as e:
-        logger.error(f"Error executing query: {e}")
-        raise HTTPException(status_code=500, detail="An internal server error occurred while processing your query.")
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"Internal Server Error: {str(e)}\n{tb}")
+        raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}") # Return actual error for debugging
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
