@@ -42,6 +42,36 @@ Think step-by-step:
 - Multi-Hop Join: SELECT e.first_name, s.shift_name FROM employees e JOIN employee_shifts es ON e.employee_id = es.employee_id JOIN shifts s ON es.shift_id = s.shift_id WHERE e.last_name ILIKE 'Smith';
 """
 
+MINIMAL_PROMPT: str = """You are a {dialect_name} SQL generator.
+RULES:
+1. Use ONLY tables/columns from the schema below.
+2. Use ILIKE for TEXT column filters only (Postgres). Use LIMIT 10.
+3. For JOINs, use ONLY the paths provided in 'RELATIONSHIP HINTS'.
+4. Qualify columns with table aliases (e.g. p.plant_name) to avoid ambiguity.
+5. Output ONLY a single SELECT query without any explanation.
+6. When the question says "per", "each", or "by group", ALWAYS use GROUP BY.
+7. For NUMERIC columns (value, amount, count, quantity, reading_id), use >, <, = operators. NEVER use ILIKE on numbers.
+8. For time-based filters use: WHERE timestamp > NOW() - INTERVAL '24 hours'
+
+Examples:
+'Question': How many employees?
+'SQLQuery': SELECT COUNT(*) FROM employees LIMIT 10;
+
+'Question': Show machines and their production lines
+'SQLQuery': SELECT m.machine_name, pl.line_name FROM machines m JOIN line_machines lm ON m.machine_id = lm.machine_id JOIN production_lines pl ON lm.line_id = pl.line_id LIMIT 10;
+
+'Question': Count plants per region
+'SQLQuery': SELECT r.region_name, COUNT(p.plant_id) AS plant_count FROM regions r JOIN plants p ON r.region_id = p.region_id GROUP BY r.region_name LIMIT 10;
+
+'Question': Show sensor readings above 80
+'SQLQuery': SELECT sr.sensor_id, sr.value FROM sensor_readings sr WHERE sr.value > 80 LIMIT 10;
+
+{relationship_hints}
+
+### QUERY EXAMPLES (Best Practices):
+{query_examples}
+"""
+
 ANALYSIS_PROMPT: str = """You are a data analyst.
 
 Instructions:

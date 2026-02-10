@@ -89,9 +89,51 @@ async def lifespan(app: FastAPI):
         # Keep additional business logic documentation (Optional Bucket 2 Overrides)
         minds.index(documentation="""
         BUSINESS OVERRIDES:
-        1. Plant names in database look like 'Plant 1 (West Dustin)'. 
-        2. If a user asks for 'West Dustin', use: WHERE plant_name LIKE '%West Dustin%'
-        3. Do NOT attempt to join machines to plants if no FK exists.
+        1. Plant names in database look like 'Plant 1 (West Dustin)' and real names like 'Tesla Giga Berlin'.
+        2. If a user asks for specific plant names like 'Tesla Giga Berlin', use: WHERE plant_name ILIKE '%Tesla Giga Berlin%'
+        
+        IOT SEMANTIC MAPPING:
+        1. 'temperature', 'humidity', 'pressure', 'reading', 'value' -> sensor_readings table.
+        2. 'alert', 'critical', 'fault' -> sensor_alerts table.
+        3. 'machine status', 'running', 'offline', 'standby' -> machines table.
+        4. 'maintenance', 'repair', 'work order', 'maintenance history' -> maintenance_requests table, maintenance_work_orders table.
+        5. 'last hour', 'last 24 hours', 'recent', 'today' -> use WHERE timestamp > NOW() - INTERVAL.
+        6. 'per region', 'per plant', 'by group', 'each' -> use GROUP BY.
+        
+        CRITICAL RELATIONSHIP HINTS:
+        1. machines → line_machines → production_lines (machine_id connects both)
+        2. machines → machine_sensors → sensors (machine_id and sensor_id connect)
+        3. employees → job_roles (role_id connects directly)
+        4. plants → regions (region_id connects directly)
+        5. plants → production_lines (plant_id connects directly)
+        6. production_lines → line_machines → machines (line_id and machine_id connect)
+        
+        COMMON JOIN PATTERNS:
+        - Machines with Production Lines: 
+          SELECT m.machine_name, m.status, pl.line_name 
+          FROM machines m 
+          JOIN line_machines lm ON m.machine_id = lm.machine_id 
+          JOIN production_lines pl ON lm.line_id = pl.line_id
+          
+        - Sensors with Machines:
+          SELECT s.sensor_id, s.model_number, m.machine_name 
+          FROM sensors s 
+          JOIN machine_sensors ms ON s.sensor_id = ms.sensor_id 
+          JOIN machines m ON ms.machine_id = m.machine_id
+          
+        - Employees with Job Roles:
+          SELECT e.first_name, e.last_name, jr.role_name 
+          FROM employees e 
+          JOIN job_roles jr ON e.role_id = jr.role_id
+          
+        - Plants with Regions:
+          SELECT p.plant_name, p.status, r.region_name 
+          FROM plants p 
+          JOIN regions r ON p.region_id = r.region_id
+        
+        WORKING MACHINE NAMES: Machines are named like 'Machine-001', 'Machine-043', etc.
+        SENSOR MODEL NUMBERS: Format varies - 'PX-9', 'SENSE-8787', etc.
+        USE ILIKE for case-insensitive string matching in PostgreSQL.
         """)
         
         logger.info("Schema relationship indexing complete.")

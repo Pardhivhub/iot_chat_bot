@@ -3,6 +3,7 @@ import sys
 import json
 import os
 import inflect
+import time
 from typing import Union, Optional
 
 import pandas as pd
@@ -42,32 +43,50 @@ class MindSQLCore:
         self.llm = llm
         self.feedback_logger = FeedbackLogger()
         self.golden_cache = GoldenCache()
-        # 🚀 Load Manual Relationships (Ground Truth) from Config
+        self.query_examples = {}
+        
+        # 🚀 Load Manual Relationships & Examples from JSON
         self.manual_relationships = {}
         rel_path = "relationships.json"
+        
         if os.path.exists(rel_path):
             try:
                 with open(rel_path, 'r') as f:
-                    # Convert lists back to tuples for internal consistency
-                    raw_rels = json.load(f)
-                    for t1, targets in raw_rels.items():
+                    data = json.load(f)
+                    
+                    # 1. Load Relationships (Support Nested and Flat)
+                    rels = data.get("relationships", data) # Fallback to top-level if not nested
+                    for t1, targets in rels.items():
                         t1 = t1.lower()
                         if t1 not in self.manual_relationships: self.manual_relationships[t1] = {}
-                        for t2, mapping in targets.items():
-                            t2 = t2.lower()
-                            if t2 not in self.manual_relationships: self.manual_relationships[t2] = {}
+                        
+                        for target_name, config in targets.items():
+                            # Handle structure: "to_regions": {"local_column": "x", "foreign_table": "y", ...}
+                            if isinstance(config, dict) and "foreign_table" in config:
+                                t2 = config["foreign_table"].lower()
+                                val = (config["local_column"], config["foreign_column"])
+                            # Handle structure: "path": ["x", "y"]
+                            elif isinstance(config, dict) and "path" in config:
+                                # Skip path aliases for now as they are multi-hop
+                                continue
+                            else:
+                                # Fallback to flat: "target_table": ["c1", "c2"]
+                                t2 = target_name.lower()
+                                val = tuple(config) if isinstance(config, list) else config
                             
-                            val = tuple(mapping) if isinstance(mapping, list) and len(mapping) == 2 else mapping
+                            if t2 not in self.manual_relationships: self.manual_relationships[t2] = {}
                             self.manual_relationships[t1][t2] = val
                             
-                            # Bidirectional
+                            # Bidirectional mapping
                             if isinstance(val, tuple):
                                 self.manual_relationships[t2][t1] = (val[1], val[0])
-                            else:
-                                self.manual_relationships[t2][t1] = val
-                log.info(f"Successfully loaded {len(self.manual_relationships)} manual relationship paths from {rel_path}")
+                    
+                    # 2. Load Query Examples
+                    self.query_examples = data.get("query_examples", {})
+                    
+                log.info(f"Loaded {len(self.manual_relationships)} tables and {len(self.query_examples)} examples from {rel_path}")
             except Exception as e:
-                log.error(f"Error loading {rel_path}: {e}")
+                log.error(f"Error parsing {rel_path}: {e}")
         
         self.relationship_graph = self.manual_relationships.copy()
         self.current_db = None       # 🚀 Cached Current DB
@@ -83,7 +102,73 @@ class MindSQLCore:
         prompt = self.build_sql_prompt(question=question, connection=connection, question_sql_list=question_sql_list,
                                        tables=tables, validation_error=validation_error, **kwargs)
         llm_response = self.llm.invoke(prompt, **kwargs)
-        return _helper.helper.extract_sql(llm_response)
+        sql = _helper.helper.extract_sql(llm_response)
+        
+        # 🚀 Fix plural/singular table names
+        sql = self.__fix_table_names(sql, tables)
+        
+        # 🚀 FIXHALLUCINATIONS (e.g. machinename -> machine_name)
+        sql = self.__sanitize_sql(sql)
+        
+        return sql
+
+    def __sanitize_sql(self, sql: str) -> str:
+        """Fix consistent LLM hallucinations via regex."""
+        if not sql: return sql
+        
+        # 1. Mapping of Hallucination -> Ground Truth
+        fixes = {
+            r"\bmachinename\b": "machine_name",
+            r"\bmachiname\b": "machine_name",
+            r"\bplantname\b": "plant_name",
+            r"\bproduction_line\b": "production_lines",  # Table name is plural
+            r"\bproductionline\b": "production_lines",
+            r"\bsensorReading\b": "sensor_readings",
+            r"\bDATE_SUB\b": "NOW() - INTERVAL",  # PG Syntax fix
+            r"\bCURDATE\(\)\b": "CURRENT_DATE",
+            r"\bplant_name\b\.": "p.",  # Fix m.plant_name (machines has no plant_name)
+        }
+        
+        for p, r in fixes.items():
+            sql = re.sub(p, r, sql, flags=re.IGNORECASE)
+        
+        # 2. Fix ILIKE on numeric columns -> use > operator
+        numeric_cols = ['value', 'amount', 'quantity', 'count', 'reading_id', 'sensor_id', 'order_id', 'n_live_tup']
+        for col in numeric_cols:
+            # Pattern: col ILIKE '%NUMBER%' -> col > NUMBER
+            pattern = rf"(\w*\.?{col})\s+ILIKE\s+'%(\d+(?:\.\d+)?)%'"
+            match = re.search(pattern, sql, re.IGNORECASE)
+            if match:
+                sql = re.sub(pattern, rf"\1 > \2", sql, flags=re.IGNORECASE)
+        
+        # 3. Add LIMIT 10 if missing
+        if 'LIMIT' not in sql.upper() and sql.strip().upper().startswith('SELECT'):
+            sql = sql.rstrip().rstrip(';') + ' LIMIT 10;'
+            
+        return sql
+
+    def __fix_table_names(self, sql: str, known_tables: list[str]) -> str:
+        """Fix singular/plural table name mismatches in generated SQL."""
+        if not sql: return sql
+        known_lower = {t.lower(): t for t in known_tables}
+        
+        # Find all potential table references in SQL (after FROM or JOIN)
+        table_refs = re.findall(r'(?:FROM|JOIN)\s+"?(\w+)"?', sql, re.IGNORECASE)
+        
+        for ref in table_refs:
+            ref_lower = ref.lower()
+            if ref_lower not in known_lower:
+                # Try plural
+                plural = self.inflect_engine.plural(ref_lower)
+                if plural in known_lower:
+                    sql = re.sub(r'\b' + ref + r'\b', known_lower[plural], sql)
+                # Try singular
+                else:
+                    singular = self.inflect_engine.singular_noun(ref_lower)
+                    if singular and singular in known_lower:
+                        sql = re.sub(r'\b' + ref + r'\b', known_lower[singular], sql)
+        
+        return sql
 
     @staticmethod
     def stuff_ddl_in_prompt(initial_prompt: str, ddl_list: list[str]) -> str:
@@ -139,7 +224,7 @@ class MindSQLCore:
             return prompt
         return initial_prompt
 
-    def __inject_sample_values(self, ddl_list: list[str], connection) -> list[str]:
+    def __enrich_ddls_with_samples(self, connection: any, ddl_list: list[str], tables: list[str]) -> list[str]:
         """
         Enriches DDLs with actual sample data (CACHED).
         Limits rows to 3 for speed and context economy.
@@ -186,78 +271,46 @@ class MindSQLCore:
     def build_sql_prompt(self, question: str, connection: any, question_sql_list: list[str], 
                          tables: list[str], validation_error: Optional[str] = None, **kwargs) -> str:
         """
-        Enhanced with VISUAL CONSTRAINT EMPHASIS
+        Enhanced with relationship hint injection and sample data.
         """
         dialect_name = self.database.get_dialect()
-        initial_prompt = self.__create_initial_prompt(question_sql_list, dialect_name)
+        
+        # 🚀 1. Generate Join Plan (Hints)
+        relationship_hints = self.__generate_mandatory_join_plan(tables)
+        
+        # 🚀 2. Identify and Format Query Examples
+        examples_str = ""
+        for key, sql in self.query_examples.items():
+            # Only inject if example references selected tables or is generic
+            if any(t in sql.lower() for t in tables):
+                examples_str += f"- {key}: {sql}\n"
+        
+        # 🚀 3. Inject into Minimal Prompt
+        initial_prompt = self.__create_minimal_prompt(dialect_name, relationship_hints, examples_str)
 
+        # 🚀 4. Fetch DDLs and Enrich with Samples
         ddl_statements = self.__get_ddl_statements(connection, tables, question, **kwargs)
+        ddl_with_samples = self.__enrich_ddls_with_samples(connection, ddl_statements, tables)
         
-        # Grounding with sample data (DISABLED FOR 1B MODEL SPEED)
-        # ddl_with_samples = self.__inject_sample_values(ddl_statements, connection)
-        ddl_with_samples = ddl_statements 
-        
-        # Use the variable that contains DDLs
-        # FIX: Ensure initial_prompt is updated with the DDL-stuffed version
-        initial_prompt = self.stuff_ddl_in_prompt(initial_prompt, ddl_with_samples)
-
-        doc_statements = self.vectorstore.retrieve_relevant_documentation(question, **kwargs)
-        initial_prompt = self.stuff_documentation_in_prompt(initial_prompt, doc_statements)
-        
-        # === NEW: VISUAL CONSTRAINT BLOCK ===
-        constraint_block = f"""
-{'='*80}
-⚠️  CRITICAL RULES - VIOLATION = IMMEDIATE FAILURE ⚠️
-{'='*80}
-
-1. 🚫 NEVER use literal IDs when question mentions NAMES
-   ❌ WRONG: WHERE plant_id = 2
-   ✅ RIGHT: JOIN plants p ON ... WHERE p.plant_name ILIKE '%Plant B%'
-
-2. 🚫 NEVER skip tables provided in the DDL section
-   All tables are included because they're REQUIRED for the question.
-   If Relationship Hints show A → B → C, you MUST join through B.
-
-3. 🚫 NEVER invent join conditions not in RELATIONSHIP HINTS
-   Use ONLY the join paths specified below.
-
-4. ✅ ALWAYS join through name tables when question mentions entity names
-   "Plant B" → must JOIN plants table
-   "Line A" → must JOIN production_lines table
-
-{'='*80}
-"""
-        
-        final_prompt = f"{constraint_block}\n{initial_prompt}\n\n"
-        
-        # Add relationship hints in prominent position
-        final_prompt += f"\n### MANDATORY JOIN PATHS ###\n"
-        final_prompt += "To connect tables, you MUST use these exact relationships:\n\n"
-        
-        # Extract join paths from relationship_graph
-        if self.relationship_graph and len(tables) > 1:
-            tables_lower = [t.lower() for t in tables]
-            for i, t1 in enumerate(tables_lower):
-                for t2 in tables_lower[i+1:]:
-                    if t1 in self.relationship_graph and t2 in self.relationship_graph[t1]:
-                        mapping = self.relationship_graph[t1][t2]
-                        if isinstance(mapping, tuple) and len(mapping) == 2:
-                            c1, c2 = mapping
-                            final_prompt += f"- {t1} ⟷ {t2}: JOIN ON {t1}.{c1} = {t2}.{c2}\n"
-        
-        final_prompt += f"### END MANDATORY PATHS ###\n\n"
+        # 🚀 5. Package into Prompt
+        final_prompt = self.stuff_ddl_in_prompt(initial_prompt, ddl_with_samples)
         
         if validation_error:
-            final_prompt += f"\n{'='*80}\n"
-            final_prompt += f"🔴 PREVIOUS ATTEMPT FAILED:\n{validation_error}\n"
-            final_prompt += f"{'='*80}\n\n"
+            final_prompt += f"\nPREVIOUS ERROR: {validation_error}\n"
         
-        final_prompt += f"\n'Question': {question}\n\n"
-        final_prompt += f"{'='*80}\n"
-        final_prompt += f"⚠️  REMINDER: Follow the CRITICAL RULES at the top\n"
-        final_prompt += f"{'='*80}"
+        final_prompt += f"\n'Question': {question}\n'SQLQuery': "
         
         return final_prompt
+
+    def __create_minimal_prompt(self, dialect_name: str, relationship_hints: str = "", query_examples: str = "") -> str:
+        """
+        Injects mandatory join plans and query examples into the minimal prompt.
+        """
+        return prompts.MINIMAL_PROMPT.format(
+            dialect_name=dialect_name,
+            relationship_hints=relationship_hints,
+            query_examples=query_examples
+        )
 
     @staticmethod
     def __create_initial_prompt(question_sql_list: list[str], dialect_name: str) -> str:
@@ -480,15 +533,13 @@ class MindSQLCore:
                 ddl_statements.append(ddl)
         
         # --- Mandatory Join Plan (Option G) ---
-        join_plan = self.__get_mandatory_join_plan(connection, selected_tables)
+        join_plan = self.__generate_mandatory_join_plan(selected_tables)
         if join_plan:
             ddl_statements.append(join_plan)
         
         return ddl_statements
-        
-        return []
 
-    def __get_mandatory_join_plan(self, connection, tables: list[str]) -> str:
+    def __generate_mandatory_join_plan(self, tables: list[str]) -> str:
         """
         🔒 OPTION G: Deterministic Join Planning
         Generates MANDATORY join clauses from relationship graph.
@@ -581,7 +632,6 @@ class MindSQLCore:
                     if not table_names:
                         log.warning("No tables selected via strict matching. Attempting broader search.")
                         
-                import time
                 total_start_time = time.time()
                 
                 # Step 2: Get DDLs using the selected tables
@@ -1215,19 +1265,16 @@ class MindSQLCore:
                 path = self.__find_shortest_path(primary, other.lower())
                 if path:
                     for p_node in path:
+                        # Find the actual case-sensitive table name for each path node
                         for real_table in metadata.keys():
                             if real_table.lower() == p_node:
                                 final_selection.add(real_table)
         
-        # Safety cap
-        if len(final_selection) > 7:
-            log.warning(f"Too many tables ({len(final_selection)}) selected. Capping to 7.")
-            # Prioritize locked/seed tables if possible, but for now just slice
-            # Better strategy: keep seeds (high score) + intermediates (path)
-            # Simple slice for now to ensure speed
-            final_selection = set(list(final_selection)[:7])
-
+        # 🚀 Final list (Cap strictly only if too large, prioritizing paths over random neighbors)
         final_list = list(final_selection)
+        if len(final_list) > 10:
+            final_list = final_list[:10]
+            
         log.info(f"FINAL TABLE SELECTION: {', '.join(final_list)}")
         return final_list
 

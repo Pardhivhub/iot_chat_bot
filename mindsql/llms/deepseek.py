@@ -52,7 +52,7 @@ class DeepSeek(ILlm):
                 messages=[self.user_message(prompt)],
                 options=Options(
                     temperature=temperature,
-                    num_ctx=16384  # 🚀 Increase context window for large DDL prompts
+                    num_ctx=4096  # 🚀 Increased to 4K for 3B/8B models with schema hints
                     )
             )
             

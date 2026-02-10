@@ -1,0 +1,187 @@
+{
+  "relationships": {
+    "plants": {
+      "to_regions": {
+        "local_column": "region_id",
+        "foreign_table": "regions",
+        "foreign_column": "region_id"
+      },
+      "to_production_lines": {
+        "local_column": "plant_id",
+        "foreign_table": "production_lines",
+        "foreign_column": "plant_id"
+      },
+      "to_departments": {
+        "local_column": "plant_id",
+        "foreign_table": "departments",
+        "foreign_column": "plant_id"
+      },
+      "to_warehouses": {
+        "local_column": "plant_id",
+        "foreign_table": "warehouses",
+        "foreign_column": "plant_id"
+      }
+    },
+    "machines": {
+      "to_line_machines": {
+        "local_column": "machine_id",
+        "foreign_table": "line_machines",
+        "foreign_column": "machine_id"
+      },
+      "to_production_lines_via_line_machines": {
+        "path": [
+          "line_machines",
+          "production_lines"
+        ],
+        "description": "machines → line_machines → production_lines"
+      },
+      "to_machine_sensors": {
+        "local_column": "machine_id",
+        "foreign_table": "machine_sensors",
+        "foreign_column": "machine_id"
+      },
+      "to_sensors_via_machine_sensors": {
+        "path": [
+          "machine_sensors",
+          "sensors"
+        ],
+        "description": "machines → machine_sensors → sensors"
+      },
+      "to_maintenance_requests": {
+        "local_column": "machine_id",
+        "foreign_table": "maintenance_requests",
+        "foreign_column": "machine_id"
+      },
+      "to_telemetry_snapshots": {
+        "local_column": "machine_id",
+        "foreign_table": "telemetry_snapshots",
+        "foreign_column": "machine_id"
+      }
+    },
+    "sensors": {
+      "to_machine_sensors": {
+        "local_column": "sensor_id",
+        "foreign_table": "machine_sensors",
+        "foreign_column": "sensor_id"
+      },
+      "to_machines_via_machine_sensors": {
+        "path": [
+          "machine_sensors",
+          "machines"
+        ],
+        "description": "sensors → machine_sensors → machines"
+      },
+      "to_sensor_readings": {
+        "local_column": "sensor_id",
+        "foreign_table": "sensor_readings",
+        "foreign_column": "sensor_id"
+      },
+      "to_sensor_alerts": {
+        "local_column": "sensor_id",
+        "foreign_table": "sensor_alerts",
+        "foreign_column": "sensor_id"
+      }
+    },
+    "employees": {
+      "to_job_roles": {
+        "local_column": "role_id",
+        "foreign_table": "job_roles",
+        "foreign_column": "role_id"
+      },
+      "to_employee_departments": {
+        "local_column": "employee_id",
+        "foreign_table": "employee_departments",
+        "foreign_column": "employee_id"
+      },
+      "to_departments_via_employee_departments": {
+        "path": [
+          "employee_departments",
+          "departments"
+        ],
+        "description": "employees → employee_departments → departments"
+      },
+      "to_employee_shifts": {
+        "local_column": "employee_id",
+        "foreign_table": "employee_shifts",
+        "foreign_column": "employee_id"
+      },
+      "to_shifts_via_employee_shifts": {
+        "path": [
+          "employee_shifts",
+          "shifts"
+        ],
+        "description": "employees → employee_shifts → shifts"
+      },
+      "to_attendance_logs": {
+        "local_column": "employee_id",
+        "foreign_table": "attendance_logs",
+        "foreign_column": "employee_id"
+      }
+    },
+    "production_lines": {
+      "to_plants": {
+        "local_column": "plant_id",
+        "foreign_table": "plants",
+        "foreign_column": "plant_id"
+      },
+      "to_line_machines": {
+        "local_column": "line_id",
+        "foreign_table": "line_machines",
+        "foreign_column": "line_id"
+      },
+      "to_machines_via_line_machines": {
+        "path": [
+          "line_machines",
+          "machines"
+        ],
+        "description": "production_lines → line_machines → machines"
+      },
+      "to_production_batches": {
+        "local_column": "line_id",
+        "foreign_table": "production_batches",
+        "foreign_column": "line_id"
+      },
+      "to_production_targets": {
+        "local_column": "line_id",
+        "foreign_table": "production_targets",
+        "foreign_column": "line_id"
+      }
+    },
+    "regions": {
+      "to_plants": {
+        "local_column": "region_id",
+        "foreign_table": "plants",
+        "foreign_column": "region_id"
+      }
+    },
+    "maintenance_requests": {
+      "to_machines": {
+        "local_column": "machine_id",
+        "foreign_table": "machines",
+        "foreign_column": "machine_id"
+      },
+      "to_maintenance_work_orders": {
+        "local_column": "request_id",
+        "foreign_table": "maintenance_work_orders",
+        "foreign_column": "request_id"
+      }
+    },
+    "maintenance_work_orders": {
+      "to_maintenance_requests": {
+        "local_column": "request_id",
+        "foreign_table": "maintenance_requests",
+        "foreign_column": "request_id"
+      }
+    }
+  },
+  "query_examples": {
+    "machines_with_lines": "SELECT m.machine_name, m.status, pl.line_name FROM machines m JOIN line_machines lm ON m.machine_id = lm.machine_id JOIN production_lines pl ON lm.line_id = pl.line_id",
+    "sensors_with_machines": "SELECT s.sensor_id, s.model_number, m.machine_name FROM sensors s JOIN machine_sensors ms ON s.sensor_id = ms.sensor_id JOIN machines m ON ms.machine_id = m.machine_id",
+    "employees_with_roles": "SELECT e.first_name, e.last_name, jr.role_name FROM employees e JOIN job_roles jr ON e.role_id = jr.role_id",
+    "plants_with_regions": "SELECT p.plant_name, p.status, r.region_name FROM plants p JOIN regions r ON p.region_id = r.region_id",
+    "fault_machines_with_lines": "SELECT m.machine_name, m.status, pl.line_name FROM machines m JOIN line_machines lm ON m.machine_id = lm.machine_id JOIN production_lines pl ON lm.line_id = pl.line_id WHERE m.status = 'Fault'",
+    "maintenance_for_plant": "SELECT mr.request_type, mr.description, mr.request_time, m.machine_name FROM maintenance_requests mr JOIN machines m ON mr.machine_id = m.machine_id JOIN line_machines lm ON m.machine_id = lm.machine_id JOIN production_lines pl ON lm.line_id = pl.line_id JOIN plants p ON pl.plant_id = p.plant_id WHERE p.plant_name ILIKE '%Tesla%'",
+    "sensor_readings_recent": "SELECT sr.sensor_id, sr.value, sr.timestamp FROM sensor_readings sr WHERE sr.timestamp > NOW() - INTERVAL '24 hours' LIMIT 10",
+    "plants_per_region": "SELECT r.region_name, COUNT(p.plant_id) AS plant_count FROM regions r JOIN plants p ON r.region_id = p.region_id GROUP BY r.region_name"
+  }
+}
