@@ -52,6 +52,10 @@ RULES:
 6. When the question says "per", "each", or "by group", ALWAYS use GROUP BY.
 7. For NUMERIC columns (value, amount, count, quantity, reading_id), use >, <, = operators. NEVER use ILIKE on numbers.
 8. For time-based filters use: WHERE timestamp > NOW() - INTERVAL '24 hours'
+9. In GROUP BY queries, ALWAYS include the name/label column in SELECT alongside aggregates. Example: SELECT d.dept_name, COUNT(e.employee_id) — NOT just SELECT COUNT(e.employee_id).
+10. For "top N", "highest", "lowest", "most", "least" questions, use ORDER BY ... DESC/ASC LIMIT N.
+11. NEVER hardcode IDs. If the user says a NAME, JOIN the table and filter by name using ILIKE.
+12. For "per plant", "by region", "each department", ALWAYS include the grouping name column in SELECT.
 
 Examples:
 'Question': How many employees?
@@ -65,6 +69,15 @@ Examples:
 
 'Question': Show sensor readings above 80
 'SQLQuery': SELECT sr.sensor_id, sr.value FROM sensor_readings sr WHERE sr.value > 80 LIMIT 10;
+
+'Question': Find the top 5 sensors with highest average reading
+'SQLQuery': SELECT s.sensor_id, s.model_number, AVG(sr.value) AS avg_val FROM sensors s JOIN sensor_readings sr ON s.sensor_id = sr.sensor_id GROUP BY s.sensor_id, s.model_number ORDER BY avg_val DESC LIMIT 5;
+
+'Question': How many employees per department?
+'SQLQuery': SELECT d.dept_name, COUNT(e.employee_id) AS emp_count FROM departments d JOIN employee_departments ed ON d.dept_id = ed.dept_id JOIN employees e ON ed.employee_id = e.employee_id GROUP BY d.dept_name LIMIT 10;
+
+'Question': How many machines does each plant have?
+'SQLQuery': SELECT p.plant_name, COUNT(DISTINCT m.machine_id) AS machine_count FROM plants p JOIN production_lines pl ON p.plant_id = pl.plant_id JOIN line_machines lm ON pl.line_id = lm.line_id JOIN machines m ON lm.machine_id = m.machine_id GROUP BY p.plant_name LIMIT 10;
 
 {relationship_hints}
 

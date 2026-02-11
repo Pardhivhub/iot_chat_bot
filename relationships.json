@@ -182,6 +182,11 @@
     "fault_machines_with_lines": "SELECT m.machine_name, m.status, pl.line_name FROM machines m JOIN line_machines lm ON m.machine_id = lm.machine_id JOIN production_lines pl ON lm.line_id = pl.line_id WHERE m.status = 'Fault'",
     "maintenance_for_plant": "SELECT mr.request_type, mr.description, mr.request_time, m.machine_name FROM maintenance_requests mr JOIN machines m ON mr.machine_id = m.machine_id JOIN line_machines lm ON m.machine_id = lm.machine_id JOIN production_lines pl ON lm.line_id = pl.line_id JOIN plants p ON pl.plant_id = p.plant_id WHERE p.plant_name ILIKE '%Tesla%'",
     "sensor_readings_recent": "SELECT sr.sensor_id, sr.value, sr.timestamp FROM sensor_readings sr WHERE sr.timestamp > NOW() - INTERVAL '24 hours' LIMIT 10",
-    "plants_per_region": "SELECT r.region_name, COUNT(p.plant_id) AS plant_count FROM regions r JOIN plants p ON r.region_id = p.region_id GROUP BY r.region_name"
+    "plants_per_region": "SELECT r.region_name, COUNT(p.plant_id) AS plant_count FROM regions r JOIN plants p ON r.region_id = p.region_id GROUP BY r.region_name",
+    "top_sensors_by_reading": "SELECT s.sensor_id, s.model_number, AVG(sr.value) AS avg_val FROM sensors s JOIN sensor_readings sr ON s.sensor_id = sr.sensor_id GROUP BY s.sensor_id, s.model_number ORDER BY avg_val DESC LIMIT 5",
+    "machines_per_plant": "SELECT p.plant_name, COUNT(DISTINCT m.machine_id) AS machine_count FROM plants p JOIN production_lines pl ON p.plant_id = pl.plant_id JOIN line_machines lm ON pl.line_id = lm.line_id JOIN machines m ON lm.machine_id = m.machine_id GROUP BY p.plant_name",
+    "employees_per_department": "SELECT d.dept_name, COUNT(e.employee_id) AS emp_count FROM departments d JOIN employee_departments ed ON d.dept_id = ed.dept_id JOIN employees e ON ed.employee_id = e.employee_id GROUP BY d.dept_name",
+    "line_efficiency": "SELECT pl.line_name, ROUND(AVG(sps.actual_quantity::numeric / NULLIF(sps.expected_quantity, 0)::numeric) * 100, 2) AS efficiency_pct FROM production_lines pl JOIN shift_production_summary sps ON pl.line_id = sps.line_id GROUP BY pl.line_name ORDER BY efficiency_pct ASC",
+    "maintenance_history_for_plant": "SELECT mr.request_type, mr.description, m.machine_name, p.plant_name FROM maintenance_requests mr JOIN machines m ON mr.machine_id = m.machine_id JOIN line_machines lm ON m.machine_id = lm.machine_id JOIN production_lines pl ON lm.line_id = pl.line_id JOIN plants p ON pl.plant_id = p.plant_id WHERE p.plant_name ILIKE '%Tesla%'"
   }
 }

@@ -127,6 +127,10 @@ class MindSQLCore:
             r"\bDATE_SUB\b": "NOW() - INTERVAL",  # PG Syntax fix
             r"\bCURDATE\(\)\b": "CURRENT_DATE",
             r"\bplant_name\b\.": "p.",  # Fix m.plant_name (machines has no plant_name)
+            r"\bwarehouse_name\b": "name",  # warehouses.name not warehouse_name
+            r"\bdepartment_name\b": "dept_name",  # departments.dept_name
+            r"\breading_value\b": "value",  # sensor_readings.value
+            r"\breading_timestamp\b": "timestamp",  # sensor_readings.timestamp
         }
         
         for p, r in fixes.items():
@@ -302,14 +306,41 @@ class MindSQLCore:
         
         return final_prompt
 
-    def __create_minimal_prompt(self, dialect_name: str, relationship_hints: str = "", query_examples: str = "") -> str:
+    def __inject_business_glossary(self, question: str) -> str:
         """
-        Injects mandatory join plans and query examples into the minimal prompt.
+        Conditionally inject business definitions ONLY when trigger words are detected.
+        Avoids bloating simple queries with unnecessary context.
+        """
+        q_lower = question.lower()
+        glossary_entries = []
+        
+        glossary_map = {
+            "efficiency": "\"efficiency\" = ROUND(AVG(sps.actual_quantity::numeric / NULLIF(sps.expected_quantity, 0)::numeric) * 100, 2) from shift_production_summary table",
+            "uptime": "\"uptime\" = machines WHERE status = 'Running'",
+            "downtime": "\"downtime\" or \"down\" = machines WHERE status = 'Fault' OR status = 'Down'",
+            "down": "\"downtime\" or \"down\" = machines WHERE status = 'Fault' OR status = 'Down'",
+            "critical": "\"critical alerts\" = JOIN sensor_alerts sa with alert_types at ON sa.type_id = at.type_id WHERE at.type_name ILIKE '%Critical%'",
+            "utilization": "\"utilization\" = COUNT(sensor_readings) per sensor — higher count = more utilized. ORDER BY count ASC for least utilized",
+            "performance": "\"performance\" = combine efficiency (actual/expected from shift_production_summary) + uptime (machines.status = 'Running')",
+        }
+        
+        for trigger, definition in glossary_map.items():
+            if trigger in q_lower:
+                glossary_entries.append(f"- {definition}")
+        
+        if glossary_entries:
+            return "### BUSINESS DEFINITIONS (use these to interpret the question):\n" + "\n".join(glossary_entries)
+        return ""
+
+    def __create_minimal_prompt(self, dialect_name: str, relationship_hints: str = "", query_examples: str = "", business_glossary: str = "") -> str:
+        """
+        Injects mandatory join plans, query examples, and conditional business glossary into the minimal prompt.
         """
         return prompts.MINIMAL_PROMPT.format(
             dialect_name=dialect_name,
             relationship_hints=relationship_hints,
-            query_examples=query_examples
+            query_examples=query_examples,
+            business_glossary=business_glossary
         )
 
     @staticmethod
@@ -615,7 +646,7 @@ class MindSQLCore:
                 # Use cached SQL directly for execution (assuming it was verified once)
                 ddl_list = self.__get_ddl_statements(connection, table_names, question, **kwargs)
             else:
-                max_retries = 1  # FAIL FAST: Only 1 retry allowed
+                max_retries = 2  # Allow 1 recovery attempt after validation feedback
                 current_retry = 0
                 
                 # Step 1: Explicit Table Selection (if not provided)
@@ -1398,6 +1429,12 @@ class MindSQLCore:
             query_aliases.add(t)
             alias_to_table[t] = t
 
+        # 4b. Extract SELECT-clause AS aliases (e.g., COUNT(*) AS plant_count)
+        # These are output column aliases, NOT schema columns, and must be whitelisted
+        select_aliases = re.findall(r'\bAS\s+[\"`]?(\w+)[\"`]?', clean_sql, re.IGNORECASE)
+        for sa in select_aliases:
+            query_aliases.add(sa.lower())
+
         # 5. Scoped Validation: Ensure tokens belong to active tables
         active_allowed_columns = set()
         active_allowed_tables = set()
@@ -1414,7 +1451,13 @@ class MindSQLCore:
             'distinct', 'inner', 'left', 'right', 'outer', 'between', 'like', 'ilike', 'any', 'all', 'exists', 'values',
             'having', 'union', 'intersect', 'except', 'case', 'when', 'then', 'else', 'end', 'cast', 'extract',
             'date_trunc', 'now', 'current_date', 'current_timestamp', 'interval', 'over', 'partition', 'row_number',
-            'rank', 'dense_rank', 'lag', 'lead', 'first_value', 'last_value'
+            'rank', 'dense_rank', 'lag', 'lead', 'first_value', 'last_value',
+            # SQL functions and type casts
+            'round', 'nullif', 'coalesce', 'greatest', 'least', 'abs', 'ceil', 'floor', 'trunc',
+            'lower', 'upper', 'trim', 'length', 'concat', 'replace', 'substring', 'position',
+            'to_char', 'to_date', 'to_number',
+            'numeric', 'integer', 'text', 'boolean', 'bigint', 'float', 'timestamp', 'date',
+            'true', 'false',
         }
         
         for word in all_words:
