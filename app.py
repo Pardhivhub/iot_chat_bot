@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 
 import pandas as pd
 import uvicorn
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
@@ -16,10 +15,7 @@ from mindsql.llms import DeepSeek
 from mindsql.vectorstores import Faiss
 from config import Config
 
-# Load environment variables
-load_dotenv()
-
-# Configure Logging
+# Configuration from centralized config
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s — %(name)s — %(levelname)s — %(message)s"

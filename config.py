@@ -5,15 +5,34 @@ Production-ready configuration for the SQL Agent
 import os
 from typing import Optional
 from urllib.parse import urlparse
-from dotenv import load_dotenv
+import sys
 
-load_dotenv()
+# Enhanced .env loading
+env_paths = [
+    os.path.join(os.getcwd(), '.env'),
+    os.path.join(os.path.dirname(__file__), '.env'),
+    os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), '.env') if sys.argv else None
+]
+
+found_env = False
+for path in filter(None, env_paths):
+    if os.path.exists(path):
+        load_dotenv(path, override=True)
+        print(f"✅ Configuration loaded from: {path}")
+        found_env = True
+        break
+
+if not found_env:
+    print("⚠️  WARNING: .env file not found! Using system environment variables or defaults.")
 
 class Config:
     """Application configuration."""
     
     # Database
-    DATABASE_URL: str = os.getenv("CORE_DB_URL", "postgresql://postgres@localhost:5432/stress_test_db")
+    DATABASE_URL: str = os.getenv("CORE_DB_URL") 
+    # Fallback only if absolutely necessary for simple tests, otherwise force .env
+    if not DATABASE_URL:
+        DATABASE_URL = "postgresql://postgres@localhost:5432/stress_test_db"
     DATABASE_SCHEMA: str = os.getenv("DB_SCHEMA", "public")
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
