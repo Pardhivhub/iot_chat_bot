@@ -67,6 +67,7 @@ class Postgres(IDatabase):
             self.current_schema = cur.fetchone()[0]
             cur.close()
             log.info(f"Active schema: {self.current_schema}")
+            print(f"Active schema: {self.current_schema}")
             
             return connection
         except psycopg2.OperationalError as e:
