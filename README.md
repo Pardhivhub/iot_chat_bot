@@ -21,6 +21,7 @@ A production-ready, AI-powered natural language interface for IoT databases. Thi
 ```text
 iot_chat_bot/
 ├── app.py                # FastAPI Backend & Intent Router
+├── terminal_chat.py      # Terminal Client (CLI)
 ├── .env                  # Environment Configuration (DB, Model, API Key)
 ├── relationships.json    # Knowledge Base: Join Paths & Semantic Examples
 ├── golden_cache.json     # Performance Layer: SQL Result Caching
