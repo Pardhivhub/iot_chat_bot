@@ -23,12 +23,15 @@ def chat():
             break
 
         payload = {
-            "question": question,
-            "api_key": API_KEY
+            "question": question
+        }
+
+        headers = {
+            "X-API-Key": API_KEY
         }
 
         try:
-            response = requests.post(API_URL, json=payload)
+            response = requests.post(API_URL, json=payload, headers=headers)
             if response.status_code == 200:
                 data = response.json()
                 answer = data.get("answer", "No answer received.")
