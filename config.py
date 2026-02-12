@@ -6,6 +6,7 @@ import os
 from typing import Optional
 from urllib.parse import urlparse
 import sys
+from dotenv import load_dotenv
 
 # Enhanced .env loading
 env_paths = [
