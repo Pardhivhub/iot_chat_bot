@@ -1,9 +1,23 @@
 import requests
 import os
+import sys
 from dotenv import load_dotenv
 
-# Load configurations
-load_dotenv()
+# Enhanced .env loading
+env_paths = [
+    os.path.join(os.getcwd(), '.env'),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
+    os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), '.env') if sys.argv else None
+]
+
+found_env = False
+for path in filter(None, env_paths):
+    if os.path.exists(path):
+        load_dotenv(path, override=True)
+        found_env = True
+        break
+
+# Configuration
 API_KEY = os.getenv("BACKEND_API_KEY", "triniti-secret-key-2026")
 API_URL = "http://localhost:8000/ask"
 
