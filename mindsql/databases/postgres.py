@@ -54,6 +54,10 @@ class Postgres(IDatabase):
             # Remove None values
             db_kwargs = {k: v for k, v in db_kwargs.items() if v is not None}
             
+            log.info(f"Attempting connection to {db_kwargs.get('host')} as user {db_kwargs.get('user')}...")
+            if "password" not in db_kwargs:
+                log.warning("No password provided in connection string!")
+            
             connection = psycopg2.connect(**db_kwargs)
             connection.autocommit = True  # Ensure read-only queries don't hang in transactions
             
