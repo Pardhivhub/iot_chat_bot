@@ -31,9 +31,7 @@ class Config:
     
     # Database
     DATABASE_URL: str = os.getenv("CORE_DB_URL") 
-    # Fallback only if absolutely necessary for simple tests, otherwise force .env
-    if not DATABASE_URL:
-        DATABASE_URL = "postgresql://postgres@localhost:5432/stress_test_db"
+    
     DATABASE_SCHEMA: str = os.getenv("DB_SCHEMA", "public")
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
@@ -68,11 +66,10 @@ class Config:
     def validate(cls) -> bool:
         """Validate critical configuration."""
         if not cls.DATABASE_URL:
-            raise ValueError("DATABASE_URL is required")
-        
-        # Check if using fallback default
-        if "postgres@localhost" in cls.DATABASE_URL:
-            print("\n💡 TIP: Using default local database. If connecting to a remote server, ensure CORE_DB_URL is set in .env")
+            print("\n❌ CRITICAL ERROR: DATABASE_URL is missing!")
+            print("Please ensure CORE_DB_URL is set in your .env file.")
+            print("Example: CORE_DB_URL=postgresql://user:pass@host:port/dbname\n")
+            raise ValueError("CORE_DB_URL must be provided in .env or system environment.")
             
         if not cls.API_KEY or cls.API_KEY == "triniti-secret-key-2026":
             print("⚠️  WARNING: Using default API key. Set BACKEND_API_KEY in production!")
