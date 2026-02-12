@@ -5,7 +5,16 @@ import psycopg2
 
 from . import IDatabase
 from .._utils import logger
-from ...config import Config
+try:
+    from ...config import Config
+except (ImportError, ValueError):
+    try:
+        from config import Config
+    except ImportError:
+        import sys
+        import os
+        sys.path.append(os.getcwd())
+        from config import Config
 from .._utils.constants import ERROR_CONNECTING_TO_DB_CONSTANT, INVALID_DB_CONNECTION_OBJECT, ERROR_WHILE_RUNNING_QUERY, \
     POSTGRESQL_SHOW_DATABASE_QUERY, POSTGRESQL_DB_TABLES_INFO_SCHEMA_QUERY, \
     POSTGRESQL_SHOW_CREATE_TABLE_QUERY, CONNECTION_ESTABLISH_ERROR_CONSTANT
