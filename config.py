@@ -32,7 +32,7 @@ class Config:
     # Database
     DATABASE_URL: str = os.getenv("CORE_DB_URL") 
     
-    DATABASE_SCHEMA: str = os.getenv("DB_SCHEMA", "public")
+    DATABASE_SCHEMA: str = os.getenv("DB_SCHEMA", "itciot")
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
     
@@ -43,7 +43,7 @@ class Config:
     
     # LLM Configuration
     OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.2")
     
     # API Configuration
     API_KEY: str = os.getenv("BACKEND_API_KEY", "triniti-secret-key-2026")

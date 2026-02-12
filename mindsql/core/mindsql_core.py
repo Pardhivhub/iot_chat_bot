@@ -234,7 +234,7 @@ class MindSQLCore:
         Limits rows to 3 for speed and context economy.
         """
         enriched_ddls = []
-        schema = getattr(self.database, 'current_schema', 'public')
+        schema = getattr(self.database, 'current_schema', 'itciot')
         
         for ddl in ddl_list:
             match = re.search(r'TABLE NAME:\s*(\w+)', ddl)
@@ -1322,7 +1322,7 @@ class MindSQLCore:
                 query = """
                 SELECT table_name, column_name, data_type
                 FROM information_schema.columns
-                WHERE table_schema = 'public'
+                WHERE table_schema = 'itciot'
                 ORDER BY table_name, ordinal_position;
                 """
                 df = self.database.execute_sql(connection, query)
@@ -1362,7 +1362,7 @@ class MindSQLCore:
                         row_count = 0
                         try:
                             # Schema-qualify the table name
-                            schema = getattr(self.database, 'current_schema', 'public')
+                            schema = getattr(self.database, 'current_schema', 'itciot')
                             count_query = f'SELECT COUNT(*) as cnt FROM "{schema}"."{table}";'
                             df_count = self.database.execute_sql(connection, count_query)
                             if df_count is not None and not df_count.empty:
@@ -1944,7 +1944,7 @@ class MindSQLCore:
         try:
             log.info("Indexing sample values for value mapping...")
             all_tables = ddls["Table"].tolist()
-            schema = getattr(self.database, 'current_schema', 'public')
+            schema = getattr(self.database, 'current_schema', 'itciot')
             
             for table in all_tables:
                 # Find columns that look like names, codes, or keys
