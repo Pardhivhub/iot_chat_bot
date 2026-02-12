@@ -14,6 +14,7 @@ class Config:
     
     # Database
     DATABASE_URL: str = os.getenv("CORE_DB_URL", "postgresql://postgres@localhost:5432/stress_test_db")
+    DATABASE_SCHEMA: str = os.getenv("DB_SCHEMA", "public")
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
     

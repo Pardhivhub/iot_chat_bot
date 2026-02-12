@@ -5,6 +5,7 @@ import psycopg2
 
 from . import IDatabase
 from .._utils import logger
+from ...config import Config
 from .._utils.constants import ERROR_CONNECTING_TO_DB_CONSTANT, INVALID_DB_CONNECTION_OBJECT, ERROR_WHILE_RUNNING_QUERY, \
     POSTGRESQL_SHOW_DATABASE_QUERY, POSTGRESQL_DB_TABLES_INFO_SCHEMA_QUERY, \
     POSTGRESQL_SHOW_CREATE_TABLE_QUERY, CONNECTION_ESTABLISH_ERROR_CONSTANT
@@ -29,7 +30,22 @@ class Postgres(IDatabase):
         """
         try:
             print("Connecting to database...")
-            connection = psycopg2.connect(url)
+            # Use urlparse to handle potential special characters in password/host
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(url)
+            
+            # Extract credentials safely
+            db_kwargs = {
+                "user": unquote(parsed.username) if parsed.username else None,
+                "password": unquote(parsed.password) if parsed.password else None,
+                "host": parsed.hostname,
+                "port": parsed.port,
+                "dbname": unquote(parsed.path.lstrip('/')) if parsed.path else None
+            }
+            # Remove None values
+            db_kwargs = {k: v for k, v in db_kwargs.items() if v is not None}
+            
+            connection = psycopg2.connect(**db_kwargs)
             connection.autocommit = True  # Ensure read-only queries don't hang in transactions
             
             # Detect and store the current schema
@@ -121,7 +137,7 @@ class Postgres(IDatabase):
         self.validate_connection(connection)
         
         # Get current schema if not already detected
-        schema = getattr(self, 'current_schema', 'public')
+        schema = getattr(self, 'current_schema', Config.DATABASE_SCHEMA)
         
         query = POSTGRESQL_DB_TABLES_INFO_SCHEMA_QUERY.format(schema=schema, db=database)
         df_tables = self.execute_sql(connection, query)
@@ -184,7 +200,7 @@ class Postgres(IDatabase):
         self.validate_connection(connection)
         
         # Get current schema if not already detected
-        schema = getattr(self, 'current_schema', 'public')
+        schema = getattr(self, 'current_schema', Config.DATABASE_SCHEMA)
         
         # Get column information using parameterized query
         column_query = """
@@ -229,7 +245,7 @@ class Postgres(IDatabase):
         self.validate_connection(connection)
         
         # Get current schema if not already detected
-        schema = getattr(self, 'current_schema', 'public')
+        schema = getattr(self, 'current_schema', Config.DATABASE_SCHEMA)
         
         query = """
         SELECT
