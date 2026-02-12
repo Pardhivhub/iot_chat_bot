@@ -1319,18 +1319,21 @@ class MindSQLCore:
 
             if dialect == "postgres":
                 # Get tables and columns
-                query = """
+                schema = getattr(self.database, 'current_schema', 'public')
+                query = f"""
                 SELECT table_name, column_name, data_type
                 FROM information_schema.columns
-                WHERE table_schema = 'public'
+                WHERE table_schema = '{schema}'
                 ORDER BY table_name, ordinal_position;
                 """
                 df = self.database.execute_sql(connection, query)
 
                 # Get approximate row counts
-                stats_query = """
+                schema = getattr(self.database, 'current_schema', 'public')
+                stats_query = f"""
                 SELECT relname AS table_name, n_live_tup AS row_count
-                FROM pg_stat_user_tables;
+                FROM pg_stat_user_tables
+                WHERE schemaname = '{schema}';
                 """
                 df_stats = self.database.execute_sql(connection, stats_query)
                 stats_map = {}
