@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # Load configurations
 load_dotenv()
 API_KEY = os.getenv("BACKEND_API_KEY", "triniti-secret-key-2026")
-API_URL = "http://localhost:8000/chat"
+API_URL = "http://localhost:8000/ask"
 
 def chat():
     print("\n-------------------------------------------")
