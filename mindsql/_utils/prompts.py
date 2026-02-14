@@ -59,25 +59,24 @@ RULES:
 
 Examples:
 'Question': How many employees?
-'SQLQuery': SELECT COUNT(*) FROM employees LIMIT 10;
+'SQLQuery': SELECT COUNT(*) FROM itciot.employees LIMIT 10;
 
 'Question': Show machines and their production lines
-'SQLQuery': SELECT m.machine_name, pl.line_name FROM machines m JOIN line_machines lm ON m.machine_id = lm.machine_id JOIN production_lines pl ON lm.line_id = pl.line_id LIMIT 10;
+'SQLQuery': SELECT m.machine_name, pl.line_name FROM itciot.machines m JOIN itciot.line_machines lm ON m.machine_id = lm.machine_id JOIN itciot.production_lines pl ON lm.line_id = pl.line_id LIMIT 10;
 
 'Question': Count plants per region
-'SQLQuery': SELECT r.region_name, COUNT(p.plant_id) AS plant_count FROM regions r JOIN plants p ON r.region_id = p.region_id GROUP BY r.region_name LIMIT 10;
+'SQLQuery': SELECT r.region_name, COUNT(p.plant_id) AS plant_count FROM itciot.regions r JOIN itciot.plants p ON r.region_id = p.region_id GROUP BY r.region_name LIMIT 10;
 
 'Question': Show sensor readings above 80
-'SQLQuery': SELECT sr.sensor_id, sr.value FROM sensor_readings sr WHERE sr.value > 80 LIMIT 10;
+'SQLQuery': SELECT sr.sensor_id, sr.value FROM itciot.sensor_readings sr WHERE sr.value > 80 LIMIT 10;
 
 'Question': Find the top 5 sensors with highest average reading
-'SQLQuery': SELECT s.sensor_id, s.model_number, AVG(sr.value) AS avg_val FROM sensors s JOIN sensor_readings sr ON s.sensor_id = sr.sensor_id GROUP BY s.sensor_id, s.model_number ORDER BY avg_val DESC LIMIT 5;
-
+'SQLQuery': SELECT s.sensor_id, s.model_number, AVG(sr.value) AS avg_val FROM itciot.sensors s JOIN itciot.sensor_readings sr ON s.sensor_id = sr.sensor_id GROUP BY s.sensor_id, s.model_number ORDER BY avg_val DESC LIMIT 5;
 'Question': How many employees per department?
-'SQLQuery': SELECT d.dept_name, COUNT(e.employee_id) AS emp_count FROM departments d JOIN employee_departments ed ON d.dept_id = ed.dept_id JOIN employees e ON ed.employee_id = e.employee_id GROUP BY d.dept_name LIMIT 10;
+'SQLQuery': SELECT d.dept_name, COUNT(e.employee_id) AS emp_count FROM itciot.departments d JOIN itciot.employee_departments ed ON d.dept_id = ed.dept_id JOIN itciot.employees e ON ed.employee_id = e.employee_id GROUP BY d.dept_name LIMIT 10;
 
 'Question': How many machines does each plant have?
-'SQLQuery': SELECT p.plant_name, COUNT(DISTINCT m.machine_id) AS machine_count FROM plants p JOIN production_lines pl ON p.plant_id = pl.plant_id JOIN line_machines lm ON pl.line_id = lm.line_id JOIN machines m ON lm.machine_id = m.machine_id GROUP BY p.plant_name LIMIT 10;
+'SQLQuery': SELECT p.plant_name, COUNT(DISTINCT m.machine_id) AS machine_count FROM itciot.plants p JOIN itciot.production_lines pl ON p.plant_id = pl.plant_id JOIN itciot.line_machines lm ON pl.line_id = lm.line_id JOIN itciot.machines m ON lm.machine_id = m.machine_id GROUP BY p.plant_name LIMIT 10;
 
 {relationship_hints}
 
