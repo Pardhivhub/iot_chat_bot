@@ -64,14 +64,15 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing MindSQL Backend...")
     try:
         db_connection = minds.database.create_connection(url=DB_URL)
-        logger.info("Connected to PostgreSQL successfully.")
+        db_type = "SQLite" if DB_URL.startswith("sqlite") else "PostgreSQL"
+        logger.info(f"Connected to {db_type} successfully.")
         # Extract database name from URL automatically for database-agnostic operation
         from urllib.parse import urlparse
         parsed_url = urlparse(DB_URL)
         db_name = parsed_url.path.lstrip('/') or 'default_db'
         
-        # 📂 PARTITION VECTORSTORE BY DB NAME (Zero Manual Work)
-        storage_path = f"./vectorstore/{db_name}"
+        # 📂 PARTITION VECTORSTORE BY DB + SCHEMA (Zero Manual Work)
+        storage_path = f"./vectorstore/{db_name}/{Config.DATABASE_SCHEMA}"
         minds.vectorstore.set_storage_path(storage_path)
         
         logger.info(f"Initializing MindSQL for database: {db_name}")
@@ -134,11 +135,10 @@ async def lifespan(app: FastAPI):
         
         logger.info("Schema relationship indexing complete.")
         logger.info("Backend fully initialized.")
-        
     except Exception as e:
         logger.error(f"Initialization Failed: {e}")
-        # In a real production app, you might want to retry or exit
-    
+        raise  # Fail fast - don't start accepting requests with broken state
+        
     yield
     
     # Shutdown logic
