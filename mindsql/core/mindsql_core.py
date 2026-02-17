@@ -245,7 +245,7 @@ class MindSQLCore:
         Limits rows to 3 for speed and context economy.
         """
         enriched_ddls = []
-        schema = getattr(self.database, 'current_schema', 'itciot')
+        schema = getattr(self.database, 'current_schema', Config.DATABASE_SCHEMA)
         
         for ddl in ddl_list:
             match = re.search(r'TABLE NAME:\s*(\w+)', ddl)
@@ -1467,6 +1467,14 @@ class MindSQLCore:
                 active_allowed_columns.update(allowed_schema[t])
                 active_allowed_tables.add(t)
 
+        # 5x. Whitelist the schema name itself (e.g., 'itciot') so it's not
+        # flagged as an unknown identifier when SQL uses itciot.table_name
+        schema_name = getattr(self.database, 'current_schema', Config.DATABASE_SCHEMA)
+        query_aliases.add(schema_name.lower())
+
+        print(f"DEBUG: allowed_schema tables: {list(allowed_schema.keys())}")
+        print(f"DEBUG: active_allowed_tables: {list(active_allowed_tables)}")
+
         # Match all words (potential tables or columns)
         all_words = re.findall(r'(\w+)', clean_sql)
         keywords = {
@@ -1968,7 +1976,7 @@ class MindSQLCore:
         try:
             log.info("Indexing sample values for value mapping...")
             all_tables = ddls["Table"].tolist()
-            schema = getattr(self.database, 'current_schema', 'itciot')
+            schema = getattr(self.database, 'current_schema', Config.DATABASE_SCHEMA)
             
             for table in all_tables:
                 # Find columns that look like names, codes, or keys
