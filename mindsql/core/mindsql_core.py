@@ -1329,8 +1329,8 @@ class MindSQLCore:
             dialect = self.database.get_dialect().lower()
 
             if dialect == "postgres":
-                # Get tables and columns
                 schema = getattr(self.database, 'current_schema', Config.DATABASE_SCHEMA)
+                print(f"DEBUG: Using schema '{schema}' for PostgreSQL metadata extraction")
                 query = f"""
                 SELECT table_name, column_name, data_type
                 FROM information_schema.columns
@@ -1387,8 +1387,13 @@ class MindSQLCore:
                         for _, col in df_cols.iterrows():
                             metadata[table]["columns"][col['name']] = {"type": col['type']}
 
+            print(f"DEBUG: METADATA EXTRACTION COMPLETE. TABLES FOUND: {len(metadata)}")
+            if len(metadata) == 0:
+                print("DEBUG: WARNING! Metadata is completely EMPTY.")
+
         except Exception as e:
             log.error(f"Failed to fetch real metadata: {e}")
+            print(f"DEBUG: Metadata extraction FAILED with error: {e}")
 
         return metadata
 
@@ -1421,16 +1426,22 @@ class MindSQLCore:
                 allowed_schema[t_name] = set(cols)
 
         # 3. Identify tables used in the query (FROM and JOIN)
+        # Handles schema-qualified names like itciot.employees or "itciot"."employees"
         tables_in_query = set()
-        for match in re.finditer(r'(?:FROM|JOIN)\s+["`]?(\w+)["`]?', clean_sql, re.IGNORECASE):
+        table_pattern = r'(?:FROM|JOIN)\s+(?:["`]?\w+["`]?\.)?["`]?(\w+)["`]?'
+        for match in re.finditer(table_pattern, clean_sql, re.IGNORECASE):
             tables_in_query.add(match.group(1).lower())
+        
+        print(f"DEBUG: Tables found in query: {tables_in_query}")
 
         # 4. Identify aliases (AS and implicit) and table names used as prefixes
         query_aliases = set()
         alias_to_table = {}
         
         # Explicit AS aliases and implicit ones in FROM/JOIN
-        for match in re.finditer(r'(?:FROM|JOIN)\s+["`]?(\w+)["`]?\s+(?:AS\s+)?["`]?(\w+)["`]?', clean_sql, re.IGNORECASE):
+        # Updated to handle schema-qualified table names before the alias
+        alias_pattern = r'(?:FROM|JOIN)\s+(?:["`]?\w+["`]?\.)?["`]?(\w+)["`]?\s+(?:AS\s+)?["`]?(\w+)["`]?'
+        for match in re.finditer(alias_pattern, clean_sql, re.IGNORECASE):
             t_name = match.group(1).lower()
             alias = match.group(2).lower()
             if alias not in ["join", "on", "where", "group", "order", "limit", "as", "by", "having", "left", "right", "inner", "outer"]:
