@@ -24,6 +24,17 @@ from ..vectorstores import IVectorstore
 from .feedback_logger import FeedbackLogger
 from .golden_cache import GoldenCache
 
+try:
+    from ...config import Config
+except (ImportError, ValueError):
+    try:
+        from config import Config
+    except ImportError:
+        import sys
+        import os
+        sys.path.append(os.getcwd())
+        from config import Config
+
 log = logger.init_loggers("Minds Core")
 
 
@@ -1319,7 +1330,7 @@ class MindSQLCore:
 
             if dialect == "postgres":
                 # Get tables and columns
-                schema = getattr(self.database, 'current_schema', 'itciot')
+                schema = getattr(self.database, 'current_schema', Config.DATABASE_SCHEMA)
                 query = f"""
                 SELECT table_name, column_name, data_type
                 FROM information_schema.columns
@@ -1364,7 +1375,7 @@ class MindSQLCore:
                         row_count = 0
                         try:
                             # Schema-qualify the table name
-                            schema = getattr(self.database, 'current_schema', 'itciot')
+                            schema = getattr(self.database, 'current_schema', Config.DATABASE_SCHEMA)
                             count_query = f'SELECT COUNT(*) as cnt FROM "{schema}"."{table}";'
                             df_count = self.database.execute_sql(connection, count_query)
                             if df_count is not None and not df_count.empty:

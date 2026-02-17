@@ -61,13 +61,17 @@ class Postgres(IDatabase):
             connection = psycopg2.connect(**db_kwargs)
             connection.autocommit = True  # Ensure read-only queries don't hang in transactions
             
-            # Detect and store the current schema
+            # Force the connection to use the configured schema (e.g., 'itciot')
+            # This prevents the DB from defaulting to 'public' for table extraction
+            schema = Config.DATABASE_SCHEMA
             cur = connection.cursor()
-            cur.execute("SELECT current_schema();")
-            self.current_schema = cur.fetchone()[0]
+            from psycopg2 import sql
+            cur.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
+            self.current_schema = schema
             cur.close()
-            log.info(f"Active schema: {self.current_schema}")
-            print(f"Active schema: {self.current_schema}")
+            
+            log.info(f"Active schema set to: {self.current_schema}")
+            print(f"Active schema set to: {self.current_schema}")
             
             return connection
         except psycopg2.OperationalError as e:
@@ -190,7 +194,8 @@ class Postgres(IDatabase):
         """
         self.validate_connection(connection)
         try:
-            ddl_df = self.execute_sql(connection, POSTGRESQL_SHOW_CREATE_TABLE_QUERY.format(table=table_name))
+            schema = getattr(self, 'current_schema', Config.DATABASE_SCHEMA)
+            ddl_df = self.execute_sql(connection, POSTGRESQL_SHOW_CREATE_TABLE_QUERY.format(table=table_name, schema=schema))
             if ddl_df is not None and not ddl_df.empty and 'create_statement' in ddl_df.columns:
                 return ddl_df['create_statement'].iloc[0]
             else:
